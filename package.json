@@ -1,0 +1,67 @@
+{
+  "name": "opencode-status-bar",
+  "version": "0.1.0",
+  "description": "OpenCode TUI plugin — displays current time (HH:mm) and battery level in the sidebar",
+  "type": "module",
+  "types": "dist/index.d.ts",
+  "exports": {
+    "./server": {
+      "import": "./dist/server.js",
+      "types": "./dist/server.d.ts"
+    },
+    "./tui": {
+      "import": "./dist/tui.js",
+      "config": {
+        "enabled": true
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "install.mjs",
+    "README.md"
+  ],
+  "bin": {
+    "opencode-status-bar": "install.mjs"
+  },
+  "scripts": {
+    "build": "tsc && node build.tui.mjs",
+    "build:tui": "node build.tui.mjs",
+    "typecheck": "tsc --noEmit",
+    "version": "node -e \"require('fs').writeFileSync('src/_version.ts','// auto-generated\\nexport const PLUGIN_VERSION='+JSON.stringify(require('./package.json').version)+';\\n')\"",
+    "prepublishOnly": "tsc"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "tui",
+    "clock",
+    "time",
+    "battery",
+    "status",
+    "sidebar"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AzYuJie/opencode-status-bar.git"
+  },
+  "author": "AzYuJie",
+  "license": "MIT",
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.14.0",
+    "@opencode-ai/sdk": ">=1.14.0",
+    "@opentui/core": ">=0.2.0",
+    "@opentui/solid": ">=0.2.0",
+    "solid-js": ">=1.9.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.14.50",
+    "@opencode-ai/sdk": "^1.14.50",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "esbuild-plugin-solid": "^0.5.0",
+    "tsx": "^4.22.3",
+    "typescript": "^5.8.0"
+  }
+}
