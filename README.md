@@ -170,23 +170,66 @@ extractor: function(r) {
 }
 ```
 
-### 完整示例：智谱（单窗）
+### 厂商脚本模板（复制即用）
 
-```jsonc
-{
-  "provider": "智谱",
-  "script": "({ request: { url: 'https://open.bigmodel.cn/api/monitor/usage/quota/limit', method: 'GET', headers: { 'Authorization': '${ZHIPU_API_KEY}', 'Accept-Language': 'en-US,en' } }, extractor: function(r) { if (!r || !r.data || !r.data.limits) return { text: 'N/A' }; const tl = r.data.limits.find(function(l) { return l.type === 'TOKENS_LIMIT'; }); if (!tl) return { text: 'N/A' }; const usage = (tl.percentage != null ? tl.percentage : 0) / 100; return { text: Math.round(usage * 100) + '%', usage: usage, resetInMs: tl.nextResetTime != null ? tl.nextResetTime - Date.now() : undefined }; } })"
-}
-```
+以下模板与实际 API 已验证可用。环境变量（`DEEPSEEK_API_KEY` 等）需自行在 shell 配置中 export。
 
-### 完整示例：DeepSeek（纯货币余额）
+#### DeepSeek
+
+货币余额（无使用率，纯 text 返回）：
 
 ```jsonc
 {
   "provider": "DeepSeek",
-  "script": "({ request: { url: 'https://api.deepseek.com/user/balance', method: 'GET', headers: { 'Authorization': 'Bearer ${DEEPSEEK_API_KEY}' } }, extractor: function(r) { if (!r || r.is_available !== true) return { text: 'N/A' }; const i = r.balance_infos && r.balance_infos[0]; if (!i) return { text: 'N/A' }; return { text: '¥' + parseFloat(i.total_balance).toFixed(2) }; } })"
+  "script": "({ request: { url: 'https://api.deepseek.com/user/balance', method: 'GET', headers: { 'Authorization': 'Bearer ${DEEPSEEK_API_KEY}', 'User-Agent': 'cc-switch/1.0' } }, extractor: function(r) { if (!r || r.is_available !== true) return { text: 'N/A' }; const i = r.balance_infos && r.balance_infos[0]; if (!i) return { text: 'N/A' }; return { text: '¥' + parseFloat(i.total_balance).toFixed(2) }; } })"
 }
 ```
+
+#### 智谱
+
+单窗使用率（TOKENS_LIMIT 百分比 + 重置倒计时）：
+
+```jsonc
+{
+  "provider": "智谱",
+  "script": "({ request: { url: 'https://open.bigmodel.cn/api/monitor/usage/quota/limit', method: 'GET', headers: { 'Authorization': '${ZHIPU_API_KEY}', 'Accept-Language': 'en-US,en', 'Content-Type': 'application/json' } }, extractor: function(r) { if (!r || !r.data || !r.data.limits) return { text: 'N/A' }; const t5 = r.data.limits.find(function(l) { return l.type === 'TOKENS_LIMIT'; }); if (!t5) return { text: 'N/A' }; const u5 = (t5.percentage != null ? t5.percentage : 0) / 100; const r5 = t5.nextResetTime != null ? t5.nextResetTime - Date.now() : undefined; const windows = [ { usage: u5, resetInMs: r5 } ]; const tm = r.data.limits.find(function(l) { return l.type === 'TIME_LIMIT'; }); if (tm) { const um = (tm.percentage != null ? tm.percentage : 0) / 100; const rm = tm.nextResetTime != null ? tm.nextResetTime - Date.now() : undefined; windows.push({ usage: um, resetInMs: rm }); } return { text: Math.round(u5 * 100) + '%', windows: windows }; } })"
+}
+```
+
+#### 跑路哥
+
+货币余额（key4your 中转站，取 remaining 或 balance）：
+
+```jsonc
+{
+  "provider": "跑路哥",
+  "script": "({ request: { url: 'https://x.key4your.com/v1/usage', method: 'GET', headers: { 'Authorization': 'Bearer ${KEY4YOU_GPT_API_KEY}', 'Content-Type': 'application/json' } }, extractor: function(r) { if (!r) return { text: 'N/A' }; const rem = r.remaining ?? r.balance; if (rem == null) return { text: 'N/A' }; return { text: '$' + parseFloat(rem).toFixed(2) }; } })"
+}
+```
+
+#### MiniMax
+
+双窗（5h 窗 + 7d 窗使用率，windows 协议）：
+
+```jsonc
+{
+  "provider": "MiniMax",
+  "script": "({ request: { url: 'https://www.minimaxi.com/v1/token_plan/remains', method: 'GET', headers: { 'Authorization': 'Bearer ${MINIMAX_API_KEY}', 'Content-Type': 'application/json' } }, extractor: function(r) { if (!r || !r.model_remains) return { text: 'N/A' }; const m = r.model_remains.find(function(x) { return x.model_name === 'general'; }); if (!m) return { text: 'N/A' }; const u5 = 1 - (m.current_interval_remaining_percent || 0) / 100; const u7 = 1 - (m.current_weekly_remaining_percent || 0) / 100; const r5 = m.end_time != null ? m.end_time - Date.now() : undefined; const r7 = m.weekly_end_time != null ? m.weekly_end_time - Date.now() : undefined; return { text: Math.round(u5 * 100) + '%', windows: [ { usage: u5, resetInMs: r5 }, { usage: u7, resetInMs: r7 } ] }; } })"
+}
+```
+
+#### Kimi
+
+双窗（5h 窗 detail + 7d 窗 usage）：
+
+```jsonc
+{
+  "provider": "Kimi",
+  "script": "({ request: { url: 'https://api.kimi.com/coding/v1/usages', method: 'GET', headers: { 'Authorization': 'Bearer ${KIMI_API_KEY}', 'Content-Type': 'application/json' } }, extractor: function(r) { if (!r) return { text: 'N/A' }; let u5 = 0, r5, u7 = 0, r7; const d = r.limits && r.limits[0] && r.limits[0].detail; if (d) { const lim = parseInt(d.limit, 10); u5 = lim > 0 ? 1 - parseInt(d.remaining, 10) / lim : 0; r5 = new Date(d.resetTime).getTime() - Date.now(); } const u = r.usage; if (u) { const lim7 = parseInt(u.limit, 10); u7 = lim7 > 0 ? 1 - parseInt(u.remaining, 10) / lim7 : 0; r7 = new Date(u.resetTime).getTime() - Date.now(); } return { text: Math.round(u5 * 100) + '%', windows: [ { usage: u5, resetInMs: r5 }, { usage: u7, resetInMs: r7 } ] }; } })"
+}
+```
+
+> 编写自己的脚本时参考上文「extractor 返回值协议」：货币类返回 `{ text }`，配额类返回 `{ text, usage, resetInMs }` 或 `{ text, windows[] }`。
 
 ### 宽度自适应
 
