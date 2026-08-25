@@ -165,12 +165,33 @@ function readBattery(): BatteryInfo {
 }
 
 function readBatteryMacOS(): BatteryInfo {
-  // pmset -g batt 返回极快（<5ms），execSync 不会阻塞 TUI
-  const out = execSync("pmset -g batt", { timeout: 5000, encoding: "utf-8" })
-  const pctMatch = out.match(/(\d+)%/)
-  const percent = pctMatch ? parseInt(pctMatch[1], 10) : null
-  const charging = /AC Power|charged|charging/i.test(out)
-  return { percent, charging }
+  // 语义：「插着电即闪烁，拔线即停」——涵盖真充电与优化充电保持态（IsCharging 在保持态为 No，
+  // 若按其判定，优化充电用户插线时永远不闪，功能形同虚设。社区工具 sketchybar 同此语义）。
+  // 主路径：ioreg ExternalConnected；grep 管道压缩输出；容量比值兼容 mAh 制老机型。
+  try {
+    const out = execSync(
+      "ioreg -rn AppleSmartBattery | grep -E 'CurrentCapacity|MaxCapacity|ExternalConnected'",
+      { timeout: 5000, encoding: "utf-8" },
+    )
+    const cur = out.match(/"CurrentCapacity"\s*=\s*(\d+)/)
+    const max = out.match(/"MaxCapacity"\s*=\s*(\d+)/)
+    const charging = /"ExternalConnected"\s*=\s*Yes/.test(out)
+    if (cur && max) {
+      const percent = Math.round((parseInt(cur[1], 10) / parseInt(max[1], 10)) * 100)
+      return { percent, charging }
+    }
+  } catch {}
+  // 降级路径：pmset 文本解析。插电输出必含 'AC Power'（drawing from）或 AC attached；
+  // \b 词边界排除 Discharging 误匹配。
+  try {
+    const out = execSync("pmset -g batt", { timeout: 5000, encoding: "utf-8" })
+    const pctMatch = out.match(/(\d+)%/)
+    const percent = pctMatch ? parseInt(pctMatch[1], 10) : null
+    const charging = /\bAC Power\b|\bAC attached\b/i.test(out)
+    return { percent, charging }
+  } catch {
+    return { percent: null, charging: false }
+  }
 }
 
 function readBatteryLinux(): BatteryInfo {
@@ -188,13 +209,17 @@ function readBatteryLinux(): BatteryInfo {
 }
 
 function readBatteryWindows(): BatteryInfo {
+  // Get-WmiObject 在 PowerShell 7 已移除，统一用 Get-CimInstance；BatteryStatus 语义：
+  // 1=放电 2=On AC（未放电但不一定在充电→按需求降级不闪）3=充满 6/7/8/9=确认充电系列
   const out = execSync(
-    'powershell -NoProfile -Command "(Get-WmiObject Win32_Battery).EstimatedChargeRemaining"',
+    'powershell -NoProfile -Command "$b = Get-CimInstance Win32_Battery; \"{0} {1}\" -f $b.EstimatedChargeRemaining, $b.BatteryStatus"',
     { timeout: 5000, encoding: "utf-8" },
-  ).trim()
-  const percent = parseInt(out, 10)
+  ).trim().split(/\s+/)
+  const percent = parseInt(out[0], 10)
   if (!Number.isFinite(percent)) return { percent: null, charging: false }
-  return { percent, charging: false }
+  const status = parseInt(out[1], 10)
+  // Windows 无法精确区分「充电中/保持」，降级为「接电即闪」：非放电态（1）均视为接电
+  return { percent, charging: Number.isFinite(status) && status !== 1 }
 }
 
 // ---------------------------------------------------------------------------
@@ -601,48 +626,68 @@ function StatusBarPanel(props: {
   const healthColor = (h: "ok" | "warn" | "alert") =>
     h === "alert" ? pal().error : h === "warn" ? pal().warning : pal().success
 
+  const toggleOpen = () => {
+    const n = !open()
+    try { props.api.kv.set(`${KV_PREFIX}.open`, n) } catch {}
+    setOpen(n)
+  }
+
   return (
     <box flexDirection="column" gap={0} ref={boxEl} onSizeChange={() => {
       const w = boxEl ? Math.max(MIN_PANEL_WIDTH, boxEl.width ?? 0) : DEFAULT_PANEL_WIDTH
       setPanelWidth((prev) => (prev === w ? prev : w))
     }}>
-      {/* ── 标题行：三分区热区（▼时间=折叠 | spacer | 电量 | ⇄缓存=弹窗）── */}
-      <box flexDirection="row">
-        <text flexShrink={0} onMouseUp={() => {
-          const n = !open()
-          try { props.api.kv.set(`${KV_PREFIX}.open`, n) } catch {}
-          setOpen(n)
-        }}>
-          <span style={{ fg: pal().muted }}>{open() ? "\u25bc " : "\u25b6 "}</span>
+      {/* 两态互斥渲染：展开态（标题行三分区 + 明细）/ 折叠态（仅摘要单行），修复折叠态双时间双箭头 */}
+      <Show when={open()} fallback={
+        /* ── 折叠态：健康星座 + 关键指标摘要（点击展开）── */
+        <text onMouseUp={toggleOpen}>
+          <span style={{ fg: pal().muted }}>{"\u25b6 "}</span>
           <span style={{ fg: pal().text }}><b>{clockParts().hh}</b></span>
           <span style={{ fg: clockPhase() === 0 ? pal().text : pal().muted }}>:</span>
           <span style={{ fg: pal().text }}><b>{clockParts().mm}</b></span>
+          <Show when={balances().length > 0}>
+            <span style={{ fg: pal().muted }}>{" \u00b7 "}</span>
+            <For each={balances()}>
+              {(b) => (
+                <span style={{ fg: healthColor(healthOf(b, cfg)) }}>{"\u25cf "}</span>
+              )}
+            </For>
+          </Show>
+          <span style={{ fg: pal().muted }}>{collapsedSummary().tail}</span>
         </text>
-        <Show when={open() && (cfg.sections.battery || cfg.sections.cache)}>
-          <box flexGrow={1} />
-          <Show when={cfg.sections.battery}>
-            <text flexShrink={0}>
-              <Show when={batteryDisplay()} fallback={<span style={{ fg: pal().muted }}>--</span>}>
-                {/* 充电时条本体低频闪烁（分档色↔accent 蓝），百分比常亮 */}
-                <span style={{ fg: battery().charging && chargePhase() === 1 ? pal().accent : batteryColor() }}>
-                  {batteryDisplay()!.bar}
+      }>
+        {/* ── 标题行：三分区热区（▼时间=折叠 | spacer | 电量 | ⇄缓存=弹窗）── */}
+        <box flexDirection="row">
+          <text flexShrink={0} onMouseUp={toggleOpen}>
+            <span style={{ fg: pal().muted }}>{"\u25bc "}</span>
+            <span style={{ fg: pal().text }}><b>{clockParts().hh}</b></span>
+            <span style={{ fg: clockPhase() === 0 ? pal().text : pal().muted }}>:</span>
+            <span style={{ fg: pal().text }}><b>{clockParts().mm}</b></span>
+          </text>
+          <Show when={cfg.sections.battery || cfg.sections.cache}>
+            <box flexGrow={1} />
+            <Show when={cfg.sections.battery}>
+              <text flexShrink={0}>
+                <Show when={batteryDisplay()} fallback={<span style={{ fg: pal().muted }}>--</span>}>
+                  {/* 充电时条本体低频闪烁（分档色↔accent 蓝），百分比常亮 */}
+                  <span style={{ fg: battery().charging && chargePhase() === 1 ? pal().accent : batteryColor() }}>
+                    {batteryDisplay()!.bar}
+                  </span>
+                  <span style={{ fg: batteryColor() }}> {batteryDisplay()!.pct}</span>
+                </Show>
+              </text>
+            </Show>
+            <Show when={cfg.sections.cache}>
+              <text flexShrink={0} onMouseUp={openCacheDialog}>
+                <span style={{ fg: pal().muted }}>{cfg.sections.battery ? " \u00b7 " : ""}</span>
+                <span style={{ fg: cacheStats().hasData ? pal().accent : pal().muted }}>
+                  {"\u21c4 " + (cacheStats().hasData ? cacheStats().hitRate.toFixed(0) + "%" : "--")}
                 </span>
-                <span style={{ fg: batteryColor() }}> {batteryDisplay()!.pct}</span>
-              </Show>
-            </text>
+              </text>
+            </Show>
           </Show>
-          <Show when={cfg.sections.cache}>
-            <text flexShrink={0} onMouseUp={openCacheDialog}>
-              <span style={{ fg: pal().muted }}>{cfg.sections.battery ? " \u00b7 " : ""}</span>
-              <span style={{ fg: cacheStats().hasData ? pal().accent : pal().muted }}>
-                {"\u21c4 " + (cacheStats().hasData ? cacheStats().hitRate.toFixed(0) + "%" : "--")}
-              </span>
-            </text>
-          </Show>
-        </Show>
-      </box>
+        </box>
 
-      <Show when={open()}>
         {/* ── 余额行（• 状态点 + 名称 + 粗体语义值，单行）── */}
         <For each={balances()}>
           {(bal) => (
@@ -667,23 +712,6 @@ function StatusBarPanel(props: {
             <span style={{ fg: pal().muted }}>{sgSummaryText(subEntries())}</span>
           </text>
         </Show>
-      </Show>
-
-      {/* ── 折叠态：健康星座 + 关键指标摘要 ── */}
-      <Show when={!open()}>
-        <text onMouseUp={() => { setOpen(true); try { props.api.kv.set(`${KV_PREFIX}.open`, true) } catch {} }}>
-          <span style={{ fg: pal().muted }}>{"\u25b6 "}</span>
-          <span style={{ fg: pal().text }}><b>{clockParts().hh}:{clockParts().mm}</b></span>
-          <Show when={balances().length > 0}>
-            <span style={{ fg: pal().muted }}>{" \u00b7 "}</span>
-            <For each={balances()}>
-              {(b) => (
-                <span style={{ fg: healthColor(healthOf(b, cfg)) }}>{"\u25cf "}</span>
-              )}
-            </For>
-          </Show>
-          <span style={{ fg: pal().muted }}>{collapsedSummary().tail}</span>
-        </text>
       </Show>
     </box>
   )

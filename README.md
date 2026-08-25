@@ -252,6 +252,17 @@ extractor: function(r) {
 | 查询失败（有历史值） | 保留上次成功值，不闪断 |
 | API 超时（15s） | 同上 |
 
+## 致谢 & 参考项目
+
+本项目在设计与实现上参考了以下两个优秀的 OpenCode 开源插件，特此致谢原作者 [Hotakus](https://github.com/Hotakus)：
+
+| 项目 | 灵感来源 |
+|------|----------|
+| [opencode-visual-cache](https://github.com/Hotakus/opencode-visual-cache) — 实时 Token 缓存命中率侧边栏 | 本项目的 `⇄ 87%` 缓存命中率展示与缓存详情弹窗 |
+| [opencode-subagent-magazine](https://github.com/Hotakus/opencode-subagent-magazine) — 实时子代理监控侧边栏 | 本项目的 `◆ task` 子代理监控行与子代理列表弹窗 |
+
+感谢 [@Hotakus](https://github.com/Hotakus) 的开源分享 🙏。如果你对**纯粹的**缓存命中率可视化或子代理监控感兴趣，强烈推荐直接使用上述原版插件——它们功能更完整、独立成体，可作为本插件的互补方案。
+
 ## License
 
 MIT
