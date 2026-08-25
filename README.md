@@ -7,6 +7,8 @@
 
 ## 面板效果
 
+![demo](docs/demo.gif)
+
 ```text
 ▼ 21:15      ▰▰▰▰▱ 81% ● · ⇄87%      ← 标题行（▼时间=折叠 · ⇄=缓存详情弹窗）
 • DeepSeek                    ¥535.72   ← 货币余额（extractor 返回 text）
