@@ -31,7 +31,7 @@
 ### 安装
 
 ```bash
-opencode plugin add opencode-status-bar
+opencode plugin opencode-status-bar
 ```
 
 或手动在 `~/.config/opencode/tui.jsonc` 中添加：
