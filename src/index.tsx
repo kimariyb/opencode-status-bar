@@ -9,7 +9,7 @@ import type {
   TuiPluginModule,
   TuiThemeCurrent,
 } from "@opencode-ai/plugin/tui"
-import { createMemo, createSignal, onMount, onCleanup, Show, For } from "solid-js"
+import { createMemo, createSignal, createEffect, onMount, onCleanup, Show, For } from "solid-js"
 import { execSync } from "node:child_process"
 import { readFileSync, readdirSync, writeFileSync, appendFileSync } from "node:fs"
 import { homedir } from "node:os"
@@ -481,13 +481,17 @@ function StatusBarPanel(props: {
     return collectCacheStats(props.api, currentSessionID())
   })
 
-  // ── 子代理追踪 ──
-  const tracker: SubagentTracker = createSubagentTracker(props.api)
+  // ── 子代理追踪（KV 持久化 + 模块级缓存：记录跨视图切换/组件重建/重启存活）──
+  const tracker: SubagentTracker = createSubagentTracker(props.api, { ttlDays: cfg.subagent.ttlDays })
   const subEntries = createMemo(() => {
     sgTick()
     return tracker.entries()
   })
   const runningSubs = createMemo(() => subEntries().filter((e) => e.status === "running").length)
+  // 兜底①：初始/会话切换时从消息历史重建条目（事件错过的子代理不丢）
+  createEffect(() => {
+    tracker.scan(currentSessionID())
+  })
 
   // ── 余额查询（事件驱动：每轮回复完成后刷新；启动时立即查一次）──
   const balanceConfigs = readBalanceConfig()

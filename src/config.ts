@@ -28,6 +28,9 @@ export interface StatusBarConfig {
     warning: number
     alert: number
   }
+  subagent: {
+    ttlDays: number // 子代理记录 KV 保留天数（0 = 永久，访问自动续期）
+  }
 }
 
 export const DEFAULT_CONFIG: StatusBarConfig = {
@@ -39,6 +42,7 @@ export const DEFAULT_CONFIG: StatusBarConfig = {
     spinner: { enabled: true, intervalMs: 80 },
   },
   thresholds: { warning: 0.7, alert: 0.9 },
+  subagent: { ttlDays: 3 },
 }
 
 function mergeAnim(raw: unknown, def: AnimConfig): AnimConfig {
@@ -59,6 +63,7 @@ export function readStatusBarConfig(configPath: string): StatusBarConfig {
       sections: { ...DEFAULT_CONFIG.sections },
       animations: { ...DEFAULT_CONFIG.animations },
       thresholds: { ...DEFAULT_CONFIG.thresholds },
+      subagent: { ...DEFAULT_CONFIG.subagent },
     }
     const sec = parsed.sections
     if (sec && typeof sec === "object") {
@@ -80,6 +85,11 @@ export function readStatusBarConfig(configPath: string): StatusBarConfig {
       const t = th as Record<string, unknown>
       if (typeof t.warning === "number") cfg.thresholds.warning = Math.min(1, Math.max(0, t.warning))
       if (typeof t.alert === "number") cfg.thresholds.alert = Math.min(1, Math.max(0, t.alert))
+    }
+    const sg = parsed.subagent
+    if (sg && typeof sg === "object") {
+      const s = sg as Record<string, unknown>
+      if (typeof s.ttlDays === "number" && s.ttlDays >= 0) cfg.subagent.ttlDays = s.ttlDays
     }
     return cfg
   } catch {
