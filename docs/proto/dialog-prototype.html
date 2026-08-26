@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>opencode-status-bar · Dialog Prototype</title>
+<style>
+/* ─────────────────────────────────────────────────────────────
+   opencode-status-bar · Dialog 高保真原型
+   语言：终端 TUI 风格（opentui 弹窗模拟）· Morandi 低饱和色板
+   ───────────────────────────────────────────────────────────── */
+:root {
+  --text:     #C5C5BB;
+  --muted:    #7A7A72;
+  --success:  #9CAF8B;
+  --warning:  #C5B88D;
+  --error:    #B08A8A;
+  --accent:   #7AA2F7;
+  --primary:  #8B9DAF;
+  --border:   #6B6B63;
+
+  --bg-page:  #14141A;
+  --bg-win:   #1B1B21;
+  --bg-hover: rgba(255, 255, 255, 0.035);
+  --bg-hot:   rgba(122, 162, 247, 0.07);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { background: var(--bg-page); }
+body {
+  background: var(--bg-page);
+  color: var(--text);
+  font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── 顶部栏（固定） ── */
+.topbar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: 20px;
+  height: 56px; padding: 0 24px;
+  background: var(--bg-page);
+  border-bottom: 1px solid var(--border);
+}
+.brand { font-size: 12px; color: var(--text); white-space: nowrap; }
+.brand .dim { color: var(--muted); }
+.tabs { display: flex; gap: 6px; }
+.tab {
+  font: inherit; font-size: 12px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.tab:hover { color: var(--text); }
+.tab.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--bg-hot);
+}
+.tab:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.topbar .hint { margin-left: auto; font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+/* ── 主体布局 ── */
+.layout {
+  display: flex; gap: 48px; align-items: flex-start;
+  max-width: 1160px; margin: 0 auto;
+  padding: 32px 24px 56px;
+}
+.sidebar-demo { position: sticky; top: 88px; flex: 0 0 auto; }
+.stage { flex: 1 1 auto; max-width: 760px; min-width: 0; }
+
+/* pane 切换 */
+.pane { display: none; }
+.pane.active { display: block; animation: panein 140ms ease; }
+@keyframes panein { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .pane.active { animation: none; }
+  .tab { transition: none; }
+}
+
+/* ── 终端窗口骨架（╭─╮ / ╰─╯ box-drawing + 细边框） ── */
+.win {
+  width: 70ch; max-width: 100%;
+  background: var(--bg-win);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  border-radius: 2px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+.win-top, .win-bottom { display: flex; align-items: center; gap: 0.6ch; padding: 0 0.9ch; }
+.win-top { padding-top: 2px; }
+.win-corner { color: var(--border); flex: 0 0 auto; line-height: 1; }
+.win-title { color: var(--text); font-weight: 700; flex: 0 0 auto; }
+.win-fill { flex: 1 1 auto; height: 0.45em; }
+.win-top .win-fill { border-bottom: 1px solid var(--border); }
+.win-bottom .win-fill { border-top: 1px solid var(--border); }
+.win-body { padding: 1.1em 2ch 1.3em; }
+
+/* ── 通用元素 ── */
+.sec { margin-top: 1.5em; }
+.sec:first-child { margin-top: 0; }
+.sec-title {
+  font-size: 12px; letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 0.6em;
+}
+.rule { border-bottom: 1px solid var(--border); margin: 0.7em 0 0.75em; }
+.entry-note { font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+.entry-note b { color: var(--accent); font-weight: 400; }
+
+/* ── 弹窗 A：Cache ── */
+.hr-line { display: flex; align-items: baseline; gap: 1.4ch; flex-wrap: wrap; }
+.hr-big { font-size: 2.5em; font-weight: 700; letter-spacing: 0.02em; line-height: 1.05; }
+.hr-bar { font-size: 1.25em; }
+.hr-delta { font-size: 1em; }
+.hr-sub { margin-top: 0.35em; font-size: 0.92em; }
+
+.krow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  column-gap: 2ch;
+  line-height: 1.6;
+}
+.krow .klabel { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.krow .kval { color: var(--text); text-align: right; white-space: nowrap; font-size: 1.18em; font-weight: 600; }
+.krow-muted .klabel, .krow-muted .kval { color: var(--muted); font-size: 1em; font-weight: 400; }
+
+/* TOKENS 四行：label | value | 占比微条 */
+.krow-bar { grid-template-columns: 1fr auto 11ch; }
+.krow-bar .kbar { color: var(--primary); white-space: nowrap; }
+
+/* COST / 通用 key-value */
+.kv-line { margin-top: 0.35em; }
+
+.model-line { margin-top: 0.35em; font-size: 0.95em; }
+
+/* ── 弹窗 B：Subagents ── */
+.sum-line { font-size: 0.95em; }
+.sum-line .sep { color: var(--muted); }
+.sum-sub { margin-top: 0.35em; font-size: 1.05em; color: var(--text); }
+.sum-sub b { font-weight: 700; }
+.sum-sub .sep { color: var(--muted); }
+
+.srow {
+  margin-top: 0.55em;
+  border-left: 2px solid transparent;
+  padding-left: 0.6ch;
+}
+/* item 隔断线：区分相邻子代理条目 */
+.srow + .srow { border-top: 1px solid rgba(107, 107, 99, 0.32); padding-top: 0.6em; }
+.srow-head {
+  display: flex; align-items: baseline; gap: 1.2ch;
+  cursor: pointer;
+  border-radius: 2px;
+  padding: 1px 0.4ch 1px 1px;
+  user-select: none;
+}
+.srow-head:hover { background: var(--bg-hover); }
+.srow-head:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.sdot { flex: 0 0 auto; }
+.sagent { color: var(--primary); flex: 0 0 auto; }
+.stitle { color: var(--text); flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.smarker { flex: 0 0 auto; color: var(--muted); font-size: 0.9em; }
+.srow:not(.open) .smarker-open { display: none; }
+.srow.open .smarker-closed { display: none; }
+
+.srow-meta, .srow-task {
+  margin-top: 0.15em;
+  color: var(--muted);
+  padding-left: 2.2ch;
+  font-size: 0.92em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.srow-meta .mt-time { color: var(--warning); }
+.srow-meta .mt-err { color: var(--error); }
+
+/* 呼吸动画：running 的 ◆ 在 accent ↔ muted 间脉动（2s，与面板 breathOn 相位一致） */
+@keyframes pulse { 0%, 100% { color: var(--accent); } 50% { color: var(--muted); } }
+.running-dot { animation: pulse 2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .running-dot { animation: none; color: var(--accent); } }
+
+/* 展开态明细 */
+.srow-detail { display: none; margin-top: 0.4em; padding-left: 2.2ch; }
+.srow.open .srow-detail { display: block; }
+.srow.open .srow-task { display: none; }
+.drow {
+  display: grid; grid-template-columns: 9ch 1fr;
+  column-gap: 2ch; line-height: 1.55; font-size: 0.95em;
+}
+.dlabel { color: var(--muted); }
+.dval { color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.copy-btn {
+  font: inherit; font-size: 0.95em;
+  color: var(--muted); background: transparent;
+  border: none; border-radius: 2px;
+  cursor: pointer; padding: 0 2px;
+}
+.copy-btn:hover { color: var(--accent); }
+.copy-btn.done { color: var(--success); }
+.copy-btn:focus-visible { outline: 1px solid var(--accent); }
+.open-session { color: var(--accent); cursor: pointer; text-decoration: none; }
+.open-session:hover { text-decoration: underline; }
+
+.op-hint { font-size: 12px; color: var(--muted); margin-top: 0.7em; }
+
+/* ── 侧边栏示意（26 列） ── */
+.demo-note { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+.demo-note .accent { color: var(--accent); }
+.side-win { width: 34ch; max-width: 100%; font-size: 12px; }
+.side-body { padding: 1em 1ch; }
+.side-row {
+  display: flex; align-items: baseline; gap: 1ch;
+  white-space: nowrap; line-height: 1.6;
+  padding: 0 0.4ch;
+  border-radius: 2px;
+}
+.side-row .sp { flex: 1 1 auto; }
+.side-row .row-name { color: var(--text); }
+/* 数据类型隔断：provider 用量区 ↔ 子代理区 */
+.side-sep { border-top: 1px solid rgba(107, 107, 99, 0.45); margin: 0.5em 0.2ch; }
+.hot {
+  font: inherit; font-size: inherit;
+  background: transparent; border: none; border-radius: 2px;
+  color: inherit; padding: 0;
+  cursor: pointer;
+}
+.hot:hover .hot-inner { background: var(--bg-hot); }
+.hot:focus-visible .hot-inner { outline: 1px solid var(--accent); }
+.hot-inner { color: inherit; padding: 0 0.3ch; border-radius: 2px; }
+/* task 整行热区（真实面板行为） */
+.hot.side-row { display: flex; width: 100%; text-align: left; padding: 0 0.4ch; }
+.hot.side-row:hover { background: var(--bg-hot); }
+
+/* toast（open session 演示反馈） */
+#toast {
+  position: fixed; right: 20px; bottom: 20px; z-index: 20;
+  padding: 8px 14px;
+  background: var(--bg-win);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  font-size: 12px;
+  opacity: 0; pointer-events: none;
+  transition: opacity 160ms ease;
+}
+#toast.show { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
+
+/* ── 窄屏降级 ── */
+@media (max-width: 960px) {
+  .layout { flex-direction: column; align-items: center; gap: 32px; }
+  .sidebar-demo { position: static; }
+  .topbar { padding: 0 14px; }
+  .topbar .hint { display: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">opencode-status-bar <span class="dim">· dialog prototype</span></div>
+  <nav class="tabs" aria-label="prototype views">
+    <button class="tab active" data-tab="cache">Cache Dialog</button>
+    <button class="tab" data-tab="subagent">Subagent Dialog</button>
+  </nav>
+  <div class="hint">高保真原型 · 交互可用（点击行展开 / copy / open session）</div>
+</header>
+
+<main class="layout">
+
+  <!-- ═══ 侧边栏触发入口示意（约 26 列） ═══ -->
+  <aside class="sidebar-demo">
+    <p class="demo-note">入口示意 · 26 cols · 点击 <span class="accent">⇄ 82%</span> / <span class="accent">task 行</span> 预览弹窗</p>
+    <div class="win side-win">
+      <div class="win-top">
+        <span class="win-corner">╭</span><span class="win-title">status</span><span class="win-fill"></span><span class="win-corner">╮</span>
+      </div>
+      <div class="side-body">
+        <!-- 标题行：▼时间 | spacer | 电量 | ⇄ 缓存（点击热区） -->
+        <div class="side-row">
+          <span class="hot-inner" style="color:var(--muted)">▼</span>
+          <span class="row-name"><b>14</b><span style="color:var(--muted)">:</span><b>23</b></span>
+          <span class="sp"></span>
+          <span class="hot-inner" style="color:var(--success)">▰▰▰▰▱ 82%</span>
+          <button class="hot" id="hot-cache" title="打开 Cache 详情弹窗">
+            <span class="hot-inner" style="color:var(--accent)">⇄ 82%</span>
+          </button>
+        </div>
+        <!-- 余额行 -->
+        <div class="side-row">
+          <span class="hot-inner" style="color:var(--success)">•</span>
+          <span class="row-name">DeepSeek</span>
+          <span class="sp"></span>
+          <span class="hot-inner" style="color:var(--success)"><b>¥12.34</b></span>
+        </div>
+        <div class="side-row">
+          <span class="hot-inner" style="color:var(--success)">•</span>
+          <span class="row-name">智谱</span>
+          <span class="sp"></span>
+          <span class="hot-inner" style="color:var(--success)">45% ▰▰▱▱▱</span>
+          <span class="hot-inner" style="color:var(--muted)">2h13m</span>
+        </div>
+        <!-- 数据类型隔断：provider 用量 ↔ 子代理 -->
+        <div class="side-sep"></div>
+        <!-- 子代理行（点击热区，整行可点） -->
+        <button class="side-row hot" id="hot-task" title="打开 Subagent 监控弹窗">
+          <span class="hot-inner" style="color:var(--accent)">◆</span>
+          <span class="row-name">task</span>
+          <span class="sp"></span>
+          <span class="hot-inner" style="color:var(--muted)">2 run · 1 done · 5.2k tok</span>
+        </button>
+      </div>
+      <div class="win-bottom">
+        <span class="win-corner">╰</span><span class="win-fill"></span><span class="win-corner">╯</span>
+      </div>
+    </div>
+    <p class="demo-note" style="margin-top:10px">折叠态摘要：▶ 14:23 · ●●●●● · ⇄82% · ⧗2run</p>
+  </aside>
+
+  <!-- ═══ 右侧舞台：tab 切换两弹窗 ═══ -->
+  <section class="stage">
+
+    <!-- ════ 弹窗 A：Cache 详情 ════ -->
+    <div class="pane pane-cache active" data-pane="cache">
+      <p class="entry-note">入口：侧边栏 <b>⇄ 82%</b> 区域 · 点击弹开 Cache 详情</p>
+
+      <div class="win win-cache">
+        <div class="win-top">
+          <span class="win-corner">╭</span><span class="win-title">Cache</span><span class="win-fill"></span><span class="win-corner">╮</span>
+        </div>
+        <div class="win-body">
+
+          <div class="sec">
+            <div class="sec-title">SESSION HIT RATE</div>
+            <div class="hr-line">
+              <span class="hr-big" style="color:var(--warning)">82.3%</span>
+              <span class="hr-bar" style="color:var(--warning)">▰▰▰▰▰▰▰▰▱▱</span>
+              <span class="hr-delta" style="color:var(--success)">↑ 1.8%</span>
+            </div>
+          </div>
+
+          <div class="sec">
+            <div class="sec-title">LAST MESSAGE</div>
+            <div class="kv-line">
+              <span style="color:var(--muted)">last hit </span><span style="color:var(--text)">78.9%</span>
+              <span style="color:var(--muted)"> · step </span><span style="color:var(--text)">12</span>
+              <span style="color:var(--muted)"> · last cost </span><span style="color:var(--text)">$0.042</span>
+            </div>
+          </div>
+
+          <div class="sec">
+            <div class="sec-title">TOKENS</div>
+            <div class="krow krow-bar">
+              <span class="klabel">input</span><span class="kval">45.2k</span><span class="kbar">▰▱▱▱▱▱▱▱▱▱</span>
+            </div>
+            <div class="krow krow-bar">
+              <span class="klabel">cache read</span><span class="kval">340.8k</span><span class="kbar">▰▰▰▰▰▰▰▰▱▱</span>
+            </div>
+            <div class="krow krow-bar">
+              <span class="klabel">cache write</span><span class="kval">28.1k</span><span class="kbar">▰▱▱▱▱▱▱▱▱▱</span>
+            </div>
+            <div class="krow krow-bar">
+              <span class="klabel">output</span><span class="kval">25.8k</span><span class="kbar">▰▱▱▱▱▱▱▱▱▱</span>
+            </div>
+            <div class="rule"></div>
+            <div class="krow krow-muted">
+              <span class="klabel">miss (input+write)</span><span class="kval">≈ 73.3k</span>
+            </div>
+          </div>
+
+          <div class="sec">
+            <div class="sec-title">COST</div>
+            <div class="krow">
+              <span class="klabel">session</span><span class="kval" style="font-size:1.32em">$1.247</span>
+            </div>
+            <div class="krow">
+              <span class="klabel" style="color:var(--success)">saved</span><span class="kval" style="color:var(--success);font-size:1.32em">~$1.53</span>
+            </div>
+          </div>
+
+          <div class="sec">
+            <div class="sec-title">MODEL</div>
+            <div class="kv-line"><span style="color:var(--text)">anthropic / claude-opus-4-6</span></div>
+            <div class="model-line">
+              <span style="color:var(--muted)">in $5.00 · read $0.50 · write $6.25</span>
+              <span style="color:var(--muted)"> /Mtok</span>
+            </div>
+          </div>
+
+          <div class="rule"></div>
+          <div class="op-hint">esc ↵ close</div>
+
+        </div>
+        <div class="win-bottom">
+          <span class="win-corner">╰</span><span class="win-fill"></span><span class="win-corner">╯</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════ 弹窗 B：Subagent 监控 ════ -->
+    <div class="pane pane-subagent" data-pane="subagent">
+      <p class="entry-note">入口：侧边栏 <b>◆ task</b> 行 · 点击弹开 Subagent 监控（点击条目可展开详情）</p>
+
+      <div class="win win-sub">
+        <div class="win-top">
+          <span class="win-corner">╭</span><span class="win-title">Subagents</span><span class="win-fill"></span><span class="win-corner">╮</span>
+        </div>
+        <div class="win-body">
+
+          <!-- 图例式汇总 -->
+          <div class="sum-line">
+            <span style="color:var(--accent)">◆ 2 running</span>
+            <span class="sep"> · </span>
+            <span style="color:var(--success)">● 3 done</span>
+            <span class="sep"> · </span>
+            <span style="color:var(--error)">✕ 1 failed</span>
+          </div>
+          <div class="sum-sub"><b>5.2k</b> tok <span class="sep">·</span> <b>24m17s</b> total</div>
+          <div class="rule"></div>
+
+          <!-- 行 1：explore（running，默认展开演示展开态） -->
+          <div class="srow open">
+            <div class="srow-head" role="button" tabindex="0" aria-expanded="true">
+              <span class="sdot running-dot" style="color:var(--accent)">◆</span>
+              <span class="sagent">explore</span>
+              <span class="stitle">定位构建脚本差异…</span>
+              <span class="smarker smarker-closed">▸</span>
+              <span class="smarker smarker-open">▼</span>
+            </div>
+            <div class="srow-meta">
+              <span class="mt-time">⏱&#xFE0E; 4m32s</span> · 1.0k tok · claude-haiku-4-5
+            </div>
+            <div class="srow-task">└ task: 读取 opencode-visual-cache 项目源码映射表，定位构建脚本差异…</div>
+            <div class="srow-detail">
+              <div class="drow"><span class="dlabel">prompt</span><span class="dval">读取 opencode-visual-cache 项目源码映射表，定位 build.tui.mjs 与入口 diff 差异…</span></div>
+              <div class="drow"><span class="dlabel">model</span><span class="dval">claude-haiku-4-5</span></div>
+              <div class="drow"><span class="dlabel">tokens</span><span class="dval">in 0.7k · out 0.3k</span></div>
+              <div class="drow"><span class="dlabel">time</span><span class="dval">started 14:32:05 · 4m32s</span></div>
+              <div class="drow"><span class="dlabel">todo</span><span class="dval">3/7 done</span></div>
+              <div class="drow">
+                <span class="dlabel">session</span>
+                <span class="dval">ses_8f3k2m… <button class="copy-btn" data-id="ses_8f3k2mQwVy7xT4L9cZ">[copy]</button></span>
+              </div>
+              <div class="drow">
+                <span class="dlabel"></span>
+                <span class="dval"><a class="open-session" data-sid="ses_8f3k2mQwVy7xT4L9cZ">→ open session</a></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 行 2：frontend-worker（running） -->
+          <div class="srow">
+            <div class="srow-head" role="button" tabindex="0" aria-expanded="false">
+              <span class="sdot running-dot" style="color:var(--accent)">◆</span>
+              <span class="sagent">frontend-worker</span>
+              <span class="stitle">重写弹窗为字符网格对齐</span>
+              <span class="smarker smarker-closed">▸</span>
+              <span class="smarker smarker-open">▼</span>
+            </div>
+            <div class="srow-meta">
+              <span class="mt-time">⏱&#xFE0E; 2m48s</span> · 0.8k tok · claude-haiku-4-5
+            </div>
+            <div class="srow-task">└ task: 将两个弹窗从 flex 布局迁移到字符网格对齐…</div>
+            <div class="srow-detail">
+              <div class="drow"><span class="dlabel">prompt</span><span class="dval">将 Cache 与 Subagents 弹窗的布局从 flex 迁移到等宽字符网格对齐，要求 label 与 value 右对齐工整…</span></div>
+              <div class="drow"><span class="dlabel">model</span><span class="dval">claude-haiku-4-5</span></div>
+              <div class="drow"><span class="dlabel">tokens</span><span class="dval">in 0.6k · out 0.2k</span></div>
+              <div class="drow"><span class="dlabel">time</span><span class="dval">started 14:34:11 · 2m48s</span></div>
+              <div class="drow"><span class="dlabel">todo</span><span class="dval">2/5 done</span></div>
+              <div class="drow">
+                <span class="dlabel">session</span>
+                <span class="dval">ses_7Jd2nWp… <button class="copy-btn" data-id="ses_7Jd2nWpQzRtY6KbB3Zu">[copy]</button></span>
+              </div>
+              <div class="drow">
+                <span class="dlabel"></span>
+                <span class="dval"><a class="open-session" data-sid="ses_7Jd2nWpQzRtY6KbB3Zu">→ open session</a></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 行 3：quick-worker（done） -->
+          <div class="srow">
+            <div class="srow-head" role="button" tabindex="0" aria-expanded="false">
+              <span class="sdot" style="color:var(--success)">●</span>
+              <span class="sagent">quick-worker</span>
+              <span class="stitle">改 README 版本号</span>
+              <span class="smarker smarker-closed">▸</span>
+              <span class="smarker smarker-open">▼</span>
+            </div>
+            <div class="srow-meta">
+              <span class="mt-time">⏱&#xFE0E; 38s</span> · 0.8k tok
+            </div>
+            <div class="srow-detail">
+              <div class="drow"><span class="dlabel">prompt</span><span class="dval">更新 README.md 中插件版本号为 0.4.0</span></div>
+              <div class="drow"><span class="dlabel">model</span><span class="dval">claude-haiku-4-5</span></div>
+              <div class="drow"><span class="dlabel">tokens</span><span class="dval">in 0.6k · out 0.2k</span></div>
+              <div class="drow"><span class="dlabel">time</span><span class="dval">started 14:36:58 · 38s</span></div>
+              <div class="drow">
+                <span class="dlabel">session</span>
+                <span class="dval">ses_1KmVz9a… <button class="copy-btn" data-id="ses_1KmVz9aQtJ7Ex4NcY2P">[copy]</button></span>
+              </div>
+              <div class="drow">
+                <span class="dlabel"></span>
+                <span class="dval"><a class="open-session" data-sid="ses_1KmVz9aQtJ7Ex4NcY2P">→ open session</a></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 行 4：reviewer（done） -->
+          <div class="srow">
+            <div class="srow-head" role="button" tabindex="0" aria-expanded="false">
+              <span class="sdot" style="color:var(--success)">●</span>
+              <span class="sagent">reviewer</span>
+              <span class="stitle">审查弹窗布局变更</span>
+              <span class="smarker smarker-closed">▸</span>
+              <span class="smarker smarker-open">▼</span>
+            </div>
+            <div class="srow-meta">
+              <span class="mt-time">⏱&#xFE0E; 2m11s</span> · 1.8k tok
+            </div>
+            <div class="srow-detail">
+              <div class="drow"><span class="dlabel">prompt</span><span class="dval">审查 Cache/Subagent 两个弹窗的布局变更，检查 64ch 内字符对齐与截断边界</span></div>
+              <div class="drow"><span class="dlabel">model</span><span class="dval">claude-opus-4-6</span></div>
+              <div class="drow"><span class="dlabel">tokens</span><span class="dval">in 1.3k · out 0.5k</span></div>
+              <div class="drow"><span class="dlabel">time</span><span class="dval">started 14:37:30 · 2m11s</span></div>
+              <div class="drow">
+                <span class="dlabel">session</span>
+                <span class="dval">ses_5QrVu3w… <button class="copy-btn" data-id="ses_5QrVu3wDnKtTy8XaB4m">[copy]</button></span>
+              </div>
+              <div class="drow">
+                <span class="dlabel"></span>
+                <span class="dval"><a class="open-session" data-sid="ses_5QrVu3wDnKtTy8XaB4m">→ open session</a></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 行 5：debugger（done） -->
+          <div class="srow">
+            <div class="srow-head" role="button" tabindex="0" aria-expanded="false">
+              <span class="sdot" style="color:var(--success)">●</span>
+              <span class="sagent">debugger</span>
+              <span class="stitle">排查请求合并偶发超时</span>
+              <span class="smarker smarker-closed">▸</span>
+              <span class="smarker smarker-open">▼</span>
+            </div>
+            <div class="srow-meta">
+              <span class="mt-time">⏱&#xFE0E; 3m48s</span> · 0.8k tok
+            </div>
+            <div class="srow-detail">
+              <div class="drow"><span class="dlabel">prompt</span><span class="dval">复现 refreshBalances 并发请求偶发 AbortError，定位 Promise.all 超时竞态</span></div>
+              <div class="drow"><span class="dlabel">model</span><span class="dval">claude-haiku-4-5</span></div>
+              <div class="drow"><span class="dlabel">tokens</span><span class="dval">in 0.5k · out 0.3k</span></div>
+              <div class="drow"><span class="dlabel">time</span><span class="dval">started 14:38:02 · 3m48s</span></div>
+              <div class="drow">
+                <span class="dlabel">session</span>
+                <span class="dval">ses_4FhKp8c… <button class="copy-btn" data-id="ses_4FhKp8cReYtUb7DmQ3s">[copy]</button></span>
+              </div>
+              <div class="drow">
+                <span class="dlabel"></span>
+                <span class="dval"><a class="open-session" data-sid="ses_4FhKp8cReYtUb7DmQ3s">→ open session</a></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 行 6：backend-worker（failed） -->
+          <div class="srow">
+            <div class="srow-head" role="button" tabindex="0" aria-expanded="false">
+              <span class="sdot" style="color:var(--error)">✕</span>
+              <span class="sagent">backend-worker</span>
+              <span class="stitle">数据库迁移脚本</span>
+              <span class="smarker smarker-closed">▸</span>
+              <span class="smarker smarker-open">▼</span>
+            </div>
+            <div class="srow-meta">
+              <span class="mt-time">⏱&#xFE0E; 1m05s</span> · <span class="mt-err">errored: connection reset</span>
+            </div>
+            <div class="srow-detail">
+              <div class="drow"><span class="dlabel">prompt</span><span class="dval">编写并验证 status_bar 配置的迁移脚本（旧键名 → 新命名空间）</span></div>
+              <div class="drow"><span class="dlabel">model</span><span class="dval">claude-haiku-4-5</span></div>
+              <div class="drow"><span class="dlabel">result</span><span class="dval" style="color:var(--error)">✕ connection reset by peer · 重试 1 次后终止</span></div>
+              <div class="drow"><span class="dlabel">time</span><span class="dval">started 14:39:17 · 1m05s</span></div>
+              <div class="drow">
+                <span class="dlabel">session</span>
+                <span class="dval">ses_9TbXn4k… <button class="copy-btn" data-id="ses_9TbXn4kQrJuVw6PfY2m">[copy]</button></span>
+              </div>
+              <div class="drow">
+                <span class="dlabel"></span>
+                <span class="dval"><a class="open-session" data-sid="ses_9TbXn4kQrJuVw6PfY2m">→ open session</a></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="rule"></div>
+          <div class="op-hint">click / enter ↵ expand · → open session · esc ↵ close</div>
+
+        </div>
+        <div class="win-bottom">
+          <span class="win-corner">╰</span><span class="win-fill"></span><span class="win-corner">╯</span>
+        </div>
+      </div>
+    </div>
+
+  </section>
+</main>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  "use strict";
+  var $$ = function (sel) { return Array.prototype.slice.call(document.querySelectorAll(sel)); };
+
+  /* ── tab 切换 ── */
+  function showPane(name) {
+    $$(".tab").forEach(function (t) { t.classList.toggle("active", t.dataset.tab === name); });
+    $$(".pane").forEach(function (p) { p.classList.toggle("active", p.dataset.pane === name); });
+  }
+  $$(".tab").forEach(function (t) {
+    t.addEventListener("click", function () { showPane(t.dataset.tab); });
+  });
+
+  /* ── 侧边栏入口热区 → 预览对应弹窗 ── */
+  document.getElementById("hot-cache").addEventListener("click", function () { showPane("cache"); });
+  document.getElementById("hot-task").addEventListener("click", function () { showPane("subagent"); });
+
+  /* ── 子代理行展开/收起（click + 键盘） ── */
+  $$(".srow").forEach(function (row) {
+    var head = row.querySelector(".srow-head");
+    function toggle() {
+      row.classList.toggle("open");
+      head.setAttribute("aria-expanded", row.classList.contains("open") ? "true" : "false");
+    }
+    head.addEventListener("click", toggle);
+    head.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+    });
+  });
+
+  /* ── [copy] 复制 session id ── */
+  $$(".copy-btn").forEach(function (btn) {
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var id = btn.dataset.id || "";
+      if (navigator.clipboard) { navigator.clipboard.writeText(id).catch(function () {}); }
+      btn.textContent = "[copied]";
+      btn.classList.add("done");
+      setTimeout(function () { btn.textContent = "[copy]"; btn.classList.remove("done"); }, 1200);
+    });
+  });
+
+  /* ── open session 演示反馈（toast） ── */
+  var toastEl = document.getElementById("toast");
+  var toastTimer;
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, 2200);
+  }
+  $$(".open-session").forEach(function (a) {
+    a.addEventListener("click", function (e) {
+      e.stopPropagation();
+      toast("→ open session: " + (a.dataset.sid || "") + " (原型演示)");
+    });
+  });
+})();
+</script>
+</body>
+</html>

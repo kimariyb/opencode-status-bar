@@ -533,15 +533,15 @@ function StatusBarPanel(props: {
     }
   }
 
-  // ── 弹窗（宿主 dialog.replace 已自带全屏遮罩与居中容器，内容直接裸放）──
+  // ── 弹窗（宿主 dialog.replace 已自带全屏遮罩与居中容器，内容直接裸放；传 accessor 保持响应式）──
   function openCacheDialog() {
     props.api.ui.dialog.replace(() => (
-      <CacheDialog stats={cacheStats()} pal={pal()} />
+      <CacheDialog stats={() => cacheStats()} pal={pal()} />
     ))
   }
   function openSubagentDialog() {
     props.api.ui.dialog.replace(() => (
-      <SubagentDialog api={props.api} entries={subEntries()} pal={pal()} breathOn={() => alertPhase() === 0} />
+      <SubagentDialog api={props.api} entries={() => subEntries()} pal={pal()} />
     ))
   }
 
