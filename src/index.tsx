@@ -16,8 +16,9 @@ import { homedir } from "node:os"
 import { PLUGIN_VERSION } from "./_version"
 import { readStatusBarConfig, type StatusBarConfig } from "./config"
 import { collectCacheStats, fmtTokens, type CacheStats } from "./cache"
+import { collectUsageStats, fmtUsageTokens, type UsageStats } from "./usage"
 import { createSubagentTracker, type SubEntry, type SubagentTracker } from "./subagent"
-import { CacheDialog, SubagentDialog } from "./dialogs"
+import { CacheDialog, SubagentDialog, UsageDialog } from "./dialogs"
 
 // ---------------------------------------------------------------------------
 // 平台检测与全局声明
@@ -423,6 +424,7 @@ function StatusBarPanel(props: {
   const [clockPhase, setClockPhase] = createSignal(0)
   const [cacheTick, setCacheTick] = createSignal(0)
   const [sgTick, setSgTick] = createSignal(0)
+  const [usageTick, setUsageTick] = createSignal(0)
   let boxEl: any
 
   // ── 主题色（自动降低饱和度，保持与 opencode 原生面板视觉一致）──
@@ -479,6 +481,12 @@ function StatusBarPanel(props: {
   const cacheStats = createMemo(() => {
     cacheTick()
     return collectCacheStats(props.api, currentSessionID())
+  })
+
+  // ── 当日用量摘要（入口行展示 today 窗口总量；数据层自带 mtime 缓存兜底）──
+  const todayUsage = createMemo(() => {
+    usageTick()
+    return collectUsageStats("today", { dbPath: cfg.usage.dbPath })
   })
 
   // ── 子代理追踪（KV 持久化 + 模块级缓存：记录跨视图切换/组件重建/重启存活）──
@@ -548,6 +556,11 @@ function StatusBarPanel(props: {
       <SubagentDialog api={props.api} entries={() => subEntries()} pal={pal()} />
     ))
   }
+  function openUsageDialog() {
+    props.api.ui.dialog.replace(() => (
+      <UsageDialog dbPath={cfg.usage.dbPath} pal={pal()} />
+    ))
+  }
 
   // ── 折叠态摘要（健康星座 + 缓存 + 子代理）──
   const collapsedSummary = createMemo(() => {
@@ -602,16 +615,17 @@ function StatusBarPanel(props: {
     const offPart = props.api.event.on("message.part.updated", bumpCache)
     const offCacheIdle = props.api.event.on("session.idle", bumpCache)
 
-    // 余额：首次立即查询 + session.idle 尾沿防抖刷新
-    if (balanceConfigs.length > 0) {
-      refreshBalances()
-      let debounce: ReturnType<typeof setTimeout> | undefined
-      const offIdle = props.api.event.on("session.idle", () => {
-        clearTimeout(debounce)
-        debounce = setTimeout(refreshBalances, 1500)
-      })
-      onCleanup(() => { offIdle(); clearTimeout(debounce) })
-    }
+    // 余额 + 用量：首次立即查询；session.idle 尾沿防抖刷新（流式期间不触发）
+    if (balanceConfigs.length > 0) refreshBalances()
+    let idleDebounce: ReturnType<typeof setTimeout> | undefined
+    const offIdle = props.api.event.on("session.idle", () => {
+      clearTimeout(idleDebounce)
+      idleDebounce = setTimeout(() => {
+        if (balanceConfigs.length > 0) refreshBalances()
+        setUsageTick((x) => x + 1)
+      }, 1500)
+    })
+    onCleanup(() => { offIdle(); clearTimeout(idleDebounce) })
 
     // 子代理：条目变化 → tick 触发重渲
     const offSg = tracker.onChange(() => setSgTick((x) => x + 1))
@@ -707,6 +721,20 @@ function StatusBarPanel(props: {
           )}
         </For>
 
+        {/* ── 用量统计区（分隔线与余额/子代理区分组；点击开统计弹窗）── */}
+        <Show when={cfg.sections.usage}>
+          <text fg={pal().muted} flexShrink={0}>{"\u2500".repeat(Math.max(MIN_PANEL_WIDTH, panelWidth()) - 2)}</text>
+          <text onMouseUp={openUsageDialog}>
+            <span style={{ fg: pal().accent }}>{"\u03a3 "}</span>
+            <span style={{ fg: pal().text }}>{"用量"}</span>
+            <span>{" ".repeat(Math.max(1, panelWidth() - 4 - visualWidth("用量") - visualWidth(usageSummaryText(todayUsage()))))}</span>
+            <span style={{ fg: pal().muted }}>{usageSummaryText(todayUsage())}</span>
+          </text>
+        </Show>
+        <Show when={cfg.sections.usage && cfg.sections.subagent && subEntries().length > 0}>
+          <text fg={pal().muted} flexShrink={0}>{"\u2500".repeat(Math.max(MIN_PANEL_WIDTH, panelWidth()) - 2)}</text>
+        </Show>
+
         {/* ── 子代理行（有活动才显示；点击开列表弹窗）── */}
         <Show when={cfg.sections.subagent && subEntries().length > 0}>
           <text onMouseUp={openSubagentDialog}>
@@ -721,9 +749,14 @@ function StatusBarPanel(props: {
   )
 }
 
+/** 用量行右侧摘要：今日 1.2M tok（非 ok 态降级 --） */
+function usageSummaryText(stats: UsageStats): string {
+  if (stats.status !== "ok") return "--"
+  return `今日 ${fmtUsageTokens(stats.totals.tokens)} tok`
+}
+
 /** 子代理行右侧摘要：⠋2 run · 1 done · 8.2k tok */
-function sgSummaryText(entries: SubEntry[]): string {
-  const run = entries.filter((e) => e.status === "running").length
+function sgSummaryText(entries: SubEntry[]): string {  const run = entries.filter((e) => e.status === "running").length
   const done = entries.filter((e) => e.status === "done").length
   const err = entries.filter((e) => e.status === "error").length
   const tok = entries.reduce((acc, e) => acc + (e.tokens ?? 0), 0)

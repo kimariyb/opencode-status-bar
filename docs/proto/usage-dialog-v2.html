@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>用量统计面板 v2 · 设计稿</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #07090c; color: #c5c5bb;
+    font-family: "SF Mono", Menlo, Consolas, "Courier New", monospace;
+    display: flex; gap: 28px; padding: 28px; align-items: flex-start; flex-wrap: wrap;
+  }
+  h1 { font-size: 15px; color: #c5c5bb; margin-bottom: 14px; font-weight: 600; }
+  h1 .dim { color: #7a7a72; font-weight: 400; }
+
+  /* ── 终端模拟区 ── */
+  .term-wrap { flex: 1; min-width: 860px; }
+  .term {
+    position: relative; height: 660px; background: #0b0d12;
+    border: 1px solid #1c2027; border-radius: 10px; overflow: hidden;
+  }
+  .term-bar { height: 30px; background: #10131a; border-bottom: 1px solid #1c2027;
+    display: flex; align-items: center; padding: 0 12px; gap: 6px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #2a2f38; }
+  .term-title { margin-left: 8px; color: #4a505a; font-size: 11px; }
+  .bg-content { padding: 10px 16px; font-size: 13px; line-height: 1.55; color: #3a3f47; white-space: pre; }
+  .backdrop { position: absolute; inset: 30px 0 0 0; background: rgba(0,0,0,0.55); }
+
+  /* ── 面板（60ch 宽，水平居中，垂直从 25% 开始 — 与宿主 dialog 行为一致）── */
+  .panel {
+    position: absolute; left: 50%; transform: translateX(-50%); top: 25%;
+    width: 60ch; background: #16181d;
+    box-shadow: 0 10px 50px rgba(0,0,0,0.55);
+    padding: 8px 0 10px; font-size: 13px; line-height: 1.6;
+  }
+  .inner { padding: 0 2ch; display: flex; flex-direction: column; gap: 5px; }
+  .row { display: flex; align-items: baseline; min-height: 1.6em; }
+  .spacer { flex: 1; }
+
+  .t-title { color: #c5c5bb; font-weight: 700; }
+  .dim { color: #7a7a72; }
+  .accent { color: #7aa2f7; }
+  .ok { color: #9caf8b; }
+  .warn { color: #c5b88d; }
+  .err { color: #b08a8a; }
+  .bold { font-weight: 700; }
+
+  .tab { color: #7a7a72; cursor: pointer; }
+  .tab.sel { color: #7aa2f7; font-weight: 700; }
+
+  .sep { color: #6b6b63; overflow: hidden; white-space: nowrap; }
+
+  /* 指标 2×2 栅格：每格 label 固定 10ch + 值右对齐（marginLeft auto） */
+  .metric { flex: 1; display: flex; align-items: baseline; }
+  .metric + .metric { margin-left: 2ch; }
+  .m-label { width: 10ch; color: #7a7a72; flex: none; }
+  .m-value { margin-left: auto; color: #c5c5bb; font-weight: 700; }
+  .m-suffix { margin-left: 1ch; }
+
+  /* 表格：模型列 flexGrow / 请求数 10ch / Token 12ch，均布局引擎定位 */
+  .cell-model { flex: 1; min-width: 0; white-space: pre; color: #c5c5bb; overflow: hidden; }
+  .cell-req { width: 10ch; flex: none; text-align: right; color: #7a7a72; }
+  .cell-tok { width: 12ch; flex: none; text-align: right; color: #c5c5bb; }
+  .thead .cell-model, .thead .cell-req, .thead .cell-tok { color: #7a7a72; }
+  .trow-dim .cell-model, .trow-dim .cell-tok { color: #7a7a72; }
+
+  /* ── 右侧设计说明 ── */
+  .notes { width: 420px; display: flex; flex-direction: column; gap: 14px; }
+  .card { background: #0e1015; border: 1px solid #1c2027; border-radius: 8px; padding: 14px 16px; }
+  .card h3 { font-size: 12px; color: #7aa2f7; margin-bottom: 8px; font-weight: 600; }
+  .card ul { list-style: none; }
+  .card li { font-size: 11.5px; line-height: 1.75; color: #9aa0a8; padding-left: 1.2em; position: relative; }
+  .card li::before { content: "·"; position: absolute; left: 0.2em; color: #7a7a72; }
+  .card li b { color: #c5c5bb; font-weight: 600; }
+  .card code { color: #9caf8b; background: #14171d; padding: 0 4px; border-radius: 3px; font-size: 11px; }
+
+  /* 解剖图 */
+  .anatomy { display: flex; flex-direction: column; gap: 8px; font-size: 11.5px; }
+  .a-row { display: flex; align-items: stretch; border: 1px dashed #2a2f38; border-radius: 4px; overflow: hidden; }
+  .a-cell { padding: 4px 8px; display: flex; align-items: center; }
+  .a-fixed { background: #141926; color: #7aa2f7; border-right: 1px dashed #2a2f38; white-space: nowrap; }
+  .a-flex { flex: 1; background: #10131a; color: #4a505a; justify-content: center; border-right: 1px dashed #2a2f38; }
+  .a-right { background: #141926; color: #9caf8b; white-space: nowrap; }
+  .swatches { display: flex; gap: 8px; flex-wrap: wrap; }
+  .sw { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: #7a7a72; }
+  .sw i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+</style>
+</head>
+<body>
+
+<div class="term-wrap">
+  <h1>用量统计面板 v2 <span class="dim">// 60ch 宽 · TUI 原生布局设计稿（30天 窗口示意）</span></h1>
+  <div class="term">
+    <div class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-title">opencode</span></div>
+    <div class="bg-content">▸ const result = await fetchUsageStats(window)
+  ▸ aggregating by model…
+  ▸ 16 models · 25,254 requests
+  ▸ cache hit rate 98.5%
+  ▸ glm-5.3 · deepseek-v4-flash · k3
+  ▸ zhipu · 4246 req · 469.3M tok</div>
+    <div class="backdrop"></div>
+
+    <div class="panel">
+      <div class="inner">
+
+        <!-- 标题行：标题左 + tab 右（flexGrow 占位，永不溢出） -->
+        <div class="row">
+          <span class="t-title">用量统计</span><span class="dim">&nbsp;// USAGE</span>
+          <span class="spacer"></span>
+          <span class="tab">[5小时]</span>&nbsp;
+          <span class="tab">[今天]</span>&nbsp;
+          <span class="tab">[7天]</span>&nbsp;
+          <span class="tab sel">‹30天›</span>
+        </div>
+        <div class="sep">────────────────────────────────────────────────────</div>
+
+        <!-- 总量区：bold + accent 承担视觉权重（TUI 无字号，用色阶与字重） -->
+        <div class="row" style="margin-top:2px">
+          <span class="accent bold" style="font-size:15px">5.1G</span>
+          <span class="dim">&nbsp;token 总消耗</span>
+        </div>
+        <div class="row">
+          <span class="bold">25,254</span><span class="dim">&nbsp;次请求 ·&nbsp;</span>
+          <span class="bold">16</span><span class="dim">&nbsp;个模型</span>
+        </div>
+
+        <!-- 指标区 2×2：label 固定 10ch + 值 marginLeft:auto 右对齐 -->
+        <div class="row" style="margin-top:2px">
+          <div class="metric"><span class="m-label">总输入</span><span class="m-value">72.1M</span></div>
+          <div class="metric"><span class="m-label">总输出</span><span class="m-value">16.2M</span></div>
+        </div>
+        <div class="row">
+          <div class="metric"><span class="m-label">缓存命中</span><span class="m-value accent">5.0G</span><span class="m-suffix ok">98%</span></div>
+          <div class="metric"><span class="m-label">缓存写入</span><span class="m-value">4.6M</span></div>
+        </div>
+
+        <div class="sep" style="margin-top:2px">────────────────────────────────────────────────────</div>
+
+        <!-- 明细表：模型列 flexGrow（长名不截断）/ 数值列固定宽右对齐 -->
+        <div class="row thead">
+          <span class="cell-model">模型</span>
+          <span class="cell-req">请求数</span>
+          <span class="cell-tok">Token</span>
+        </div>
+        <div class="row"><span class="cell-model">deepseek-v4-flash</span><span class="cell-req">10,805</span><span class="cell-tok">3.6G</span></div>
+        <div class="row"><span class="cell-model">glm-5.2</span><span class="cell-req">4,175</span><span class="cell-tok">469.3M</span></div>
+        <div class="row"><span class="cell-model">deepseek-v4-pro</span><span class="cell-req">3,441</span><span class="cell-tok">251.4M</span></div>
+        <div class="row"><span class="cell-model">MiniMax-M3</span><span class="cell-req">2,007</span><span class="cell-tok">152.3M</span></div>
+        <div class="row"><span class="cell-model">deepseek-v4-flash-vision-exp</span><span class="cell-req">599</span><span class="cell-tok">131.6M</span></div>
+        <div class="row"><span class="cell-model">glm-5.3</span><span class="cell-req">913</span><span class="cell-tok">126.7M</span></div>
+        <div class="row"><span class="cell-model">x-preview-f-free</span><span class="cell-req">781</span><span class="cell-tok">121.1M</span></div>
+        <div class="row"><span class="cell-model">k3</span><span class="cell-req">582</span><span class="cell-tok">91.7M</span></div>
+        <div class="row"><span class="cell-model">gpt-5.6-luna</span><span class="cell-req">227</span><span class="cell-tok">82.7M</span></div>
+        <div class="row"><span class="cell-model">gpt-5.4</span><span class="cell-req">943</span><span class="cell-tok">62.7M</span></div>
+        <div class="row trow-dim"><span class="cell-model">其他模型 · 6</span><span class="cell-req">781</span><span class="cell-tok">50.6M</span></div>
+
+        <div class="sep" style="margin-top:2px">────────────────────────────────────────────────────</div>
+        <div class="row dim">esc ↵ 关闭 · 点击时间范围切换</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="notes">
+
+  <div class="card">
+    <h3>① 为什么不会再错位</h3>
+    <ul>
+      <li><b>对齐全部交给布局引擎</b>：固定宽 cell（<code>width=10ch</code>）+ 弹性占位（<code>flexGrow</code> / <code>marginLeft:auto</code>），零手工空格拼接</li>
+      <li>CJK 测宽偏差只会<b>整体平移</b>，不会再出现某行多一格、某行少一格的错行</li>
+      <li>全部原语均来自已验证代码：CacheDialog 的 <code>marginLeft:auto</code>、宿主的 <code>flexGrow</code> spacer</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>② 相比 v1 砍掉的东西</h3>
+    <ul>
+      <li><b>点阵大字</b>：背景色块在真实终端碎裂（vision 确认），改为 bold + accent 色承担视觉权重</li>
+      <li><b>双线外框 ╔═╗</b>：宿主 dialog 自带面板底色与居中定位，手画边框是纯粹的错位源</li>
+      <li><b>进度条</b>：按需求取消；表格占比条、指标微条全部移除</li>
+      <li><b>表格竖线 │</b>：不再手拼，列距由弹性布局拉开，更接近 opencode 原生对话框风格</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>③ 布局解剖（对齐的实现方式）</h3>
+    <div class="anatomy">
+      <div class="a-row">
+        <div class="a-cell a-fixed">label 固定 10ch</div>
+        <div class="a-cell a-flex">flexGrow 弹性空隙</div>
+        <div class="a-cell a-right">value 右对齐</div>
+      </div>
+      <div class="a-row">
+        <div class="a-cell a-flex" style="flex:2">模型列 flexGrow（长名不截断）</div>
+        <div class="a-cell a-fixed">请求数 10ch</div>
+        <div class="a-cell a-right">Token 12ch</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>④ 切 tab 不重算指标 · Bug 修复方案</h3>
+    <ul>
+      <li><b>根因</b>：旧指标区用「数字索引 For + 回调体内提前取值」，切窗口时索引数组 [0..5] 相同 → Solid 判定无变化 → 行内容永不重建；明细表是对象引用 For → 每次新对象触发重建，所以只有表在刷</li>
+      <li><b>修复</b>：指标 / 总量 / 表格全部改为<b>对象 For 或内联 map</b>，stats 一变全区域重算</li>
+      <li><b>验证</b>：实施时配 headless 渲染测试——切窗口后断言指标数值与表格同步变化</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>⑤ 色彩与交互</h3>
+    <div class="swatches" style="margin-bottom:8px">
+      <span class="sw"><i style="background:#7aa2f7"></i>accent 总量</span>
+      <span class="sw"><i style="background:#9caf8b"></i>≥85% 命中</span>
+      <span class="sw"><i style="background:#c5b88d"></i>≥70%</span>
+      <span class="sw"><i style="background:#b08a8a"></i>&lt;70%</span>
+      <span class="sw"><i style="background:#7a7a72"></i>muted 标签</span>
+    </div>
+    <ul>
+      <li>tab 点击切换（‹选中› accent，其余 muted）；esc 关闭；错误态纯文本 + 点击重试</li>
+      <li>Top 10 + <b>其他模型 · N</b> 聚合行（dim）；缓存写入仅 &gt;0 时显示</li>
+      <li>面板 60ch 填满宿主 medium 容器（水平居中），高度 ~26 行（垂直观感趋中）</li>
+    </ul>
+  </div>
+
+</div>
+
+</body>
+</html>

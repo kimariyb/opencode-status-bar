@@ -17,6 +17,7 @@ export interface StatusBarConfig {
     battery: boolean
     cache: boolean
     subagent: boolean
+    usage: boolean
   }
   animations: {
     alert: AnimConfig
@@ -31,10 +32,13 @@ export interface StatusBarConfig {
   subagent: {
     ttlDays: number // 子代理记录 KV 保留天数（0 = 永久，访问自动续期）
   }
+  usage: {
+    dbPath?: string // 自定义 opencode.db 路径（默认自动探测 ~/.local/share/opencode）
+  }
 }
 
 export const DEFAULT_CONFIG: StatusBarConfig = {
-  sections: { clock: true, battery: true, cache: true, subagent: true },
+  sections: { clock: true, battery: true, cache: true, subagent: true, usage: true },
   animations: {
     alert: { enabled: true, intervalMs: 600 },
     charging: { enabled: true, intervalMs: 1200 },
@@ -43,6 +47,7 @@ export const DEFAULT_CONFIG: StatusBarConfig = {
   },
   thresholds: { warning: 0.7, alert: 0.9 },
   subagent: { ttlDays: 3 },
+  usage: {},
 }
 
 function mergeAnim(raw: unknown, def: AnimConfig): AnimConfig {
@@ -64,11 +69,12 @@ export function readStatusBarConfig(configPath: string): StatusBarConfig {
       animations: { ...DEFAULT_CONFIG.animations },
       thresholds: { ...DEFAULT_CONFIG.thresholds },
       subagent: { ...DEFAULT_CONFIG.subagent },
+      usage: { ...DEFAULT_CONFIG.usage },
     }
     const sec = parsed.sections
     if (sec && typeof sec === "object") {
       const s = sec as Record<string, unknown>
-      for (const k of ["clock", "battery", "cache", "subagent"] as const) {
+      for (const k of ["clock", "battery", "cache", "subagent", "usage"] as const) {
         if (typeof s[k] === "boolean") cfg.sections[k] = s[k] as boolean
       }
     }
@@ -90,6 +96,11 @@ export function readStatusBarConfig(configPath: string): StatusBarConfig {
     if (sg && typeof sg === "object") {
       const s = sg as Record<string, unknown>
       if (typeof s.ttlDays === "number" && s.ttlDays >= 0) cfg.subagent.ttlDays = s.ttlDays
+    }
+    const us = parsed.usage
+    if (us && typeof us === "object") {
+      const u = us as Record<string, unknown>
+      if (typeof u.dbPath === "string" && u.dbPath.trim()) cfg.usage.dbPath = u.dbPath.trim()
     }
     return cfg
   } catch {
