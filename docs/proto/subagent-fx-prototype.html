@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>子代理面板 · 霓虹动效原型 v0.9</title>
+<style>
+  :root {
+    --bg: #0d0d11;
+    --panel: #17171d;
+    --panel-border: #2a2a33;
+    --text: #e8e8e3;
+    --muted: #8a8a80;
+    --primary: #b499e0;
+    --border: #3a3a44;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "JetBrains Mono", "Fira Code", Menlo, monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 32px 16px 64px;
+    min-height: 100vh;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 24px; text-align: center; line-height: 1.7; }
+  .sub b { color: var(--text); }
+
+  /* ── 模拟 TUI 面板（xlarge 116 列，等宽字符网格）── */
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    width: 1010px;
+    max-width: 97vw;
+    padding: 10px 14px 14px;
+    font-size: 14px;
+    line-height: 1.75;
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .row { display: flex; align-items: baseline; }
+  .hint { color: var(--muted); font-size: 12.5px; }
+  .sep { color: var(--border); font-size: 12.5px; letter-spacing: 0; overflow: hidden; white-space: nowrap; }
+  .dim-label { color: var(--muted); }
+
+  /* 汇总行 */
+  .summary .grow { flex: 1; }
+
+  /* 表头 */
+  .thead { color: var(--muted); font-size: 13px; }
+
+  /* 条目行布局（列区对齐）：状态10 agent16 标题flex 耗时9 token8 模型26(全展示) ▸1 */
+  .it { display: flex; align-items: baseline; }
+  .it .c-status { width: 84px; flex-shrink: 0; }
+  .it .c-agent  { width: 134px; flex-shrink: 0; color: var(--primary); overflow: hidden; }
+  .it .c-title  { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .it .c-time   { width: 76px; flex-shrink: 0; text-align: right; color: var(--muted); }
+  .it .c-tok    { width: 68px; flex-shrink: 0; text-align: right; color: var(--muted); }
+  .it .c-model  { width: 220px; flex-shrink: 0; color: var(--muted); }
+  .it .c-mark   { width: 12px; flex-shrink: 0; color: var(--muted); text-align: right; }
+  .it .c-time.run { color: var(--text); }
+
+  /* 动效词字符 span（JS 逐字符上色） */
+  .fx-word { letter-spacing: 0.5px; font-weight: 600; }
+
+  /* 分区头 */
+  .sec-run { color: var(--accent, #00F0FF); }
+  .sec-hist { color: var(--muted); cursor: pointer; }
+
+  /* status-bar item 演示 */
+  .statusbar-demo {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    width: 340px; padding: 6px 12px; margin-top: 20px;
+    font-size: 13px; display: flex;
+  }
+  .statusbar-demo .grow { flex: 1; }
+
+  /* ── 配色方案切换 ── */
+  .schemes { display: flex; gap: 10px; margin: 22px 0 8px; flex-wrap: wrap; justify-content: center; }
+  .scheme {
+    border: 1px solid var(--panel-border); background: var(--panel);
+    padding: 8px 14px; cursor: pointer; font-size: 12.5px; color: var(--muted);
+    display: flex; gap: 8px; align-items: center; transition: border-color .15s;
+  }
+  .scheme:hover { border-color: #555; }
+  .scheme.active { border-color: var(--text); color: var(--text); }
+  .scheme .dot { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .note { color: var(--muted); font-size: 11.5px; margin-top: 14px; line-height: 1.8; text-align: center; max-width: 780px; }
+</style>
+</head>
+<body>
+
+<h1>子代理面板 · 霓虹动效原型 v0.9</h1>
+<div class="sub">
+  与 TUI <b>完全同构</b>的动效引擎（同确定性伪随机 · 同 150ms 节奏 · 逐字符换色/替换）——本页所见即 TUI 所得<br>
+  <b>Working</b> = glitch 故障字符替换 · <b>Finished / Error</b> = neon 将熄灯管（同色系暗化，不再变灰）
+</div>
+
+<!-- 配色切换 -->
+<div class="schemes" id="schemes"></div>
+
+<!-- 弹窗面板原型 -->
+<div class="panel" id="panel"></div>
+
+<!-- status-bar item -->
+<div class="statusbar-demo" id="statusbar"></div>
+
+<div class="note" id="note"></div>
+
+<script>
+// ─────────────────────────────────────────────────────────
+// 动效引擎：与 TUI statusFxFrame 逐行同构（确定性伪随机）
+// ─────────────────────────────────────────────────────────
+const FX_MS = 150
+const GLITCH_CHARS = "#$%&@!?*"
+
+function fxRand(seed) {
+  const x = Math.imul(seed ^ 0x9e3779b9, 0x85ebca6b) >>> 0
+  return ((x ^ (x >>> 13)) >>> 0) / 4294967295
+}
+function strSeed(s) {
+  let h = 2166136261
+  for (const c of s) { h = Math.imul(h ^ c.codePointAt(0), 16777619) >>> 0 }
+  return h >>> 0
+}
+function statusFxFrame(word, status, tick, seed) {
+  const out = []
+  const glitching = status === "running" && fxRand(seed + tick * 701 + 5) < 0.22
+  const wholeDim = status !== "running" && fxRand(seed + tick * 409 + 7) < 0.03
+  for (let i = 0; i < word.length; i++) {
+    const r = fxRand(seed + tick * 1013 + i * 31)
+    if (glitching && r < 0.4) out.push({ glitch: true })
+    else if (status === "running") out.push({ dim: r > 0.92 })
+    else out.push({ clash: fxRand(seed + tick * 211 + 3) < 0.12 && r < 0.5, dim: wholeDim })
+  }
+  return out
+}
+
+// ─────────────────────────────────────────────────────────
+// 配色定稿 v2（大佬指定）：三态统一「主色 + 对撞色」动效语言
+// · Working  glitch 快节奏：#00F0FF 青 + 故障字 #FF2E88 品红
+// · Finished neon 慢节奏：  #4DC9FF 天蓝 + 灯管漏气闪 #FF9E4D 暖橙
+// · Error    neon 慢节奏：  #FFE11A 黄 + 灯管漏气闪 #B44CFF 紫
+// dim = 同色系暗版（整词压暗帧用）
+// ─────────────────────────────────────────────────────────
+const SCHEMES = {
+  final: {
+    name: "定稿 v2 · 三系混搭",
+    desc: "Working #00F0FF 霓虹青（故障字 #FF2E88 品红对撞）· Finished #4DC9FF 天蓝（漏气闪 #FF9E4D 暖橙）· Error #FFE11A 黄（漏气闪 #B44CFF 紫）",
+    working: "#00F0FF", workingDim: "#007a85", glitchCh: "#FF2E88",
+    finished: "#4DC9FF", finishedDim: "#1a6480", finishedClash: "#FF9E4D",
+    error: "#FFE11A", errorDim: "#8a7a0a", errorClash: "#B44CFF",
+    secRun: "#00F0FF",
+  },
+}
+let curScheme = "final"
+
+// ─────────────────────────────────────────────────────────
+// 数据（贴近实测场景：3 running + 5 done + 1 error，历史 ≤6 展开）
+// ─────────────────────────────────────────────────────────
+const ENTRIES = [
+  { id: "e0", agent: "explore",       title: "重构数据层缓存检索路径并覆盖读写", status: "running", time: "2m41s", tok: "5.1k",  model: "glm-4.7" },
+  { id: "e1", agent: "backend-worker", title: "修复 KV 持久化竞态与自愈兜底",    status: "running", time: "5m12s", tok: "8.9k",  model: "claude-sonnet-4-5" },
+  { id: "e2", agent: "build",         title: "实现弹窗滚动高度策略",              status: "running", time: "1m03s", tok: "2.2k",  model: "glm-4.7" },
+  { id: "e3", agent: "explore",       title: "扫描消息 parts 重建条目",           status: "done",    time: "3m12s", tok: "12.4k", model: "kimi-k2-0905-preview" },
+  { id: "e4", agent: "build",         title: "修复事件缺失时计时偏差",            status: "done",    time: "1m48s", tok: "4.7k",  model: "glm-4.7" },
+  { id: "e5", agent: "backend",       title: "审计会话归属路由逻辑",              status: "done",    time: "3m33s", tok: "9.8k",  model: "glm-4.7" },
+  { id: "e6", agent: "reviewer",      title: "审查弹窗布局重构代码",              status: "done",    time: "2m04s", tok: "5.9k",  model: "glm-4.7" },
+  { id: "e7", agent: "build",         title: "补充 typecheck 验证",               status: "done",    time: "0m47s", tok: "1.1k",  model: "glm-4.7" },
+  { id: "e8", agent: "backend-worker", title: "任务派生失败（无子会话）",         status: "error",   time: "0m02s", tok: "-",     model: "-" },
+]
+const WORD = { running: "Working", done: "Finished", error: "Error" }
+
+// ─────────────────────────────────────────────────────────
+// 渲染（结构一次搭建，动效词每 tick 只重铺字符 span）
+// ─────────────────────────────────────────────────────────
+const panel = document.getElementById("panel")
+const fxWords = [] // { el, entry, status }
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag)
+  if (cls) e.className = cls
+  if (text !== undefined) e.textContent = text
+  return e
+}
+
+function buildPanel() {
+  panel.innerHTML = ""
+  fxWords.length = 0
+  const S = SCHEMES[curScheme]
+
+  const addRow = (cls) => { const r = el("div", "row " + (cls || "")); panel.appendChild(r); return r }
+  const sep = () => addRow("sep").textContent = "─".repeat(106)
+
+  // 提示行 + 分隔
+  addRow("hint").textContent = "esc ↵ 关闭 · 滚轮翻页 · 点击 ↵ 展开 · → 打开会话"
+  sep()
+  // 汇总
+  const sm = addRow("summary")
+  sm.appendChild(el("span", "", "◆ 3")).style.color = S.working
+  sm.appendChild(el("span", "dim-label", " · "))
+  sm.appendChild(el("span", "", "● 5")).style.color = S.finished
+  sm.appendChild(el("span", "dim-label", " · "))
+  sm.appendChild(el("span", "", "✕ 1")).style.color = S.error
+  sm.appendChild(el("span", "grow", " ".repeat(30)))
+  sm.appendChild(el("span", "", "52m08s")).style.fontWeight = 600
+  sm.appendChild(el("span", "dim-label", " · "))
+  sm.appendChild(el("span", "", "50.3k")).style.fontWeight = 600
+  sm.appendChild(el("span", "dim-label", " tok"))
+  sep()
+  // 表头
+  const th = addRow("thead")
+  const cols = [["状态",84],["AGENT",134],["标题",null],["耗时",76,"r"],["TOKEN",68,"r"],["模型",220],["",12]]
+  for (const [label, w, align] of cols) {
+    const c = el("div")
+    if (w) { c.style.width = w + "px"; c.style.flexShrink = 0 } else { c.style.flex = 1 }
+    if (align === "r") { c.style.textAlign = "right" }
+    c.textContent = label
+    th.appendChild(c)
+  }
+  // running 分区
+  const secR = addRow(); secR.appendChild(el("span", "sec-run", "▶ 运行中 3"))
+  for (const e of ENTRIES.filter(x => x.status === "running")) addEntry(secRow = true, e)
+  // 分隔 + 历史分区（5 done + 1 error ≤ 阈值，展开态）
+  sep()
+  const secH = addRow(); secH.appendChild(el("span", "sec-hist", "▾ 已完成 5 ✕ 1 · 点击收起"))
+  for (const e of ENTRIES.filter(x => x.status !== "running")) addEntry(false, e)
+
+  function addEntry(isRun, e) {
+    const r = el("div", "it")
+    panel.appendChild(r)
+    // 状态动效词
+    const cs = el("div", "c-status")
+    const word = el("span", "fx-word")
+    cs.appendChild(word); r.appendChild(cs)
+    fxWords.push({ el: word, entry: e })
+    // 其余列
+    r.appendChild(el("div", "c-agent", e.agent))
+    r.appendChild(el("div", "c-title", e.title + " "))
+    const ct = el("div", "c-time" + (e.status === "running" ? " run" : ""), e.time); r.appendChild(ct)
+    r.appendChild(el("div", "c-tok", e.tok))
+    r.appendChild(el("div", "c-model", e.model))
+    r.appendChild(el("div", "c-mark", "▸"))
+  }
+}
+
+// 每 tick：只重铺动效词字符（与 TUI StatusWord 组件粒度一致）
+function renderFx(tick) {
+  const S = SCHEMES[curScheme]
+  for (const { el: wordEl, entry } of fxWords) {
+    const status = entry.status
+    const word = WORD[status]
+    const frame = statusFxFrame(word, status, tick, strSeed(entry.id))
+    wordEl.innerHTML = ""
+    for (let i = 0; i < word.length; i++) {
+      const sp = document.createElement("span")
+      const f = frame[i]
+      if (status === "running") {
+        // glitch：故障字符替换（对撞色）+ 亮度抖动（同色暗版）
+        if (f.glitch) { sp.textContent = GLITCH_CHARS[Math.floor(fxRand(strSeed(entry.id) + tick * 1013 + i * 31) * GLITCH_CHARS.length)]; sp.style.color = S.glitchCh }
+        else { sp.textContent = word[i]; sp.style.color = f.dim ? S.workingDim : S.working }
+      } else {
+        // neon：主色 + 单字符漏气闪（对撞色）+ 整词压暗帧（同色暗版）
+        const base = status === "done" ? S.finished : S.error
+        const dim = status === "done" ? S.finishedDim : S.errorDim
+        const clash = status === "done" ? S.finishedClash : S.errorClash
+        sp.textContent = word[i]
+        sp.style.color = f.clash ? clash : f.dim ? dim : base
+      }
+      wordEl.appendChild(sp)
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// status-bar item 演示（定稿：左「子代理 」· 右三态计数，无时间 token）
+// ─────────────────────────────────────────────────────────
+function buildStatusbar() {
+  const sb = document.getElementById("statusbar")
+  sb.innerHTML = ""
+  const S = SCHEMES[curScheme]
+  const mk = (text, color, bold) => {
+    const s = el("span", "", text)
+    s.style.color = color
+    if (bold) s.style.fontWeight = 600
+    return s
+  }
+  // 左：名称（名称后空格分隔）｜右：三态计数（图标+空格+数字）
+  sb.appendChild(el("span", "dim-label", "子代理 "))
+  sb.appendChild(el("span", "grow", ""))
+  sb.appendChild(mk("◆ 3", S.working, true))
+  sb.appendChild(el("span", "dim-label", " · "))
+  sb.appendChild(mk("● 5", S.finished, true))
+  sb.appendChild(el("span", "dim-label", " · "))
+  sb.appendChild(mk("✕ 1", S.error, true))
+}
+
+// ─────────────────────────────────────────────────────────
+// 配色切换器
+// ─────────────────────────────────────────────────────────
+function buildSchemes() {
+  const box = document.getElementById("schemes")
+  box.innerHTML = ""
+  for (const [key, s] of Object.entries(SCHEMES)) {
+    const b = el("div", "scheme" + (key === curScheme ? " active" : ""))
+    b.appendChild(el("span", "dot")).style.background = s.working
+    b.appendChild(el("span", "", s.name))
+    b.onclick = () => { curScheme = key; buildSchemes(); buildPanel(); buildStatusbar(); buildNote() }
+    box.appendChild(b)
+  }
+}
+function buildNote() {
+  document.getElementById("note").innerHTML =
+    `当前方案：<b>${SCHEMES[curScheme].name}</b> — ${SCHEMES[curScheme].desc}<br>` +
+    `· Working glitch 快节奏：~22% 帧对撞色故障字符替换 + 亮度抖动 · Finished/Error neon 慢节奏：~12% 帧单字符漏气闪对撞色 + ~3% 整词压暗<br>` +
+    `· 面板 xlarge 116 列（模型名全展示，标题列加宽）· item 左「子代理」右三态计数 · 终端无光晕 shadow——本页即 TUI 真实效果`
+}
+
+// ─────────────────────────────────────────────────────────
+buildSchemes(); buildPanel(); buildStatusbar(); buildNote()
+let tick = 0
+setInterval(() => { renderFx(++tick) }, FX_MS)
+</script>
+</body>
+</html>
