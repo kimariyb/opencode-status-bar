@@ -6,12 +6,13 @@
 // ---------------------------------------------------------------------------
 
 import type { JSX } from "@opentui/solid"
+import { useTerminalDimensions } from "@opentui/solid"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { execSync } from "node:child_process"
 import { createSignal, onMount, onCleanup, For, Show, createMemo } from "solid-js"
 import type { CacheStats } from "./cache"
 import { fmtTokens, fmtCost } from "./cache"
-import type { SubEntry } from "./subagent"
+import type { SubEntry, SubStatus } from "./subagent"
 import type { UsageStats, UsageWindow } from "./usage"
 import { collectUsageStats, USAGE_WINDOWS, fmtUsageTokens } from "./usage"
 
@@ -33,16 +34,6 @@ const METER_CELLS = 10
 function meterBar(ratio: number, cells: number, full: string, empty: string): string {
   const filled = Math.round(Math.min(1, Math.max(0, ratio)) * cells)
   return full.repeat(filled) + empty.repeat(cells - filled)
-}
-
-function pad(s: string, n: number): string {
-  return s.length >= n ? s : s + " ".repeat(n - s.length)
-}
-
-function hhmmss(t: number): string {
-  const d = new Date(t)
-  const p = (n: number) => String(n).padStart(2, "0")
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
 function elapsedOf(e: SubEntry, now: number): string {
@@ -73,6 +64,29 @@ function copyText(s: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// 弹窗滚动区：操作提示固定顶部（不随内容滚动），内容超高分流到 scrollbox 滚轮翻页。
+// 宿主 dialog 面板高度不限、自屏高 1/4 处起排——不限高时长内容会被终端底缘裁掉。
+// ---------------------------------------------------------------------------
+
+function ScrollArea(props: { hint: string; sep: string; pal: Palette; children: JSX.Element }): JSX.Element {
+  const dims = useTerminalDimensions()
+  // 高度策略（设计稿 v0.7）：封顶 2/3 屏再扣 6 行固定开销，底沿 ≤ 11H/12——
+// 任何终端尺寸下底部至少留 H/12 余量，绝不贴死终端底缘（用户明确要求）。
+  // 注意：scrollbox 的 maxHeight 是「拉到该高」而非「上限」——内容不足也会占满（实测），
+  // 须以 contentOptions.minHeight=0 覆盖内部 minHeight:100%，让内容不足时收缩为自然高度。
+  const maxH = () => Math.min(40, Math.max(8, Math.floor((dims().height * 2) / 3) - 6))
+  return (
+    <box flexDirection="column">
+      <text fg={props.pal.muted}>{props.hint}</text>
+      <text fg={props.pal.muted}>{props.sep}</text>
+      <scrollbox scrollY maxHeight={maxH()} contentOptions={{ minHeight: 0 }}>
+        {props.children}
+      </scrollbox>
+    </box>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Cache 详情弹窗
 // ---------------------------------------------------------------------------
 
@@ -98,110 +112,111 @@ export function CacheDialog(props: { stats: () => CacheStats; pal: Palette }): J
   }
 
   return (
-    <box flexDirection="column" gap={1} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
-      {/* ── SESSION HIT RATE：背景色块大数字（5 行点阵）+ 右侧进度条/趋势垂直居中 ── */}
-      <box flexDirection="row" gap={2}>
-        <box flexDirection="column" flexShrink={0}>
-          <For each={bigTextRows(s().hitRate.toFixed(1) + "%")}>
-            {(row) => bigRowText(row, hitColor(s().hitRate))}
-          </For>
-        </box>
-        <box flexDirection="column" justifyContent="center" gap={0}>
-          <text fg={hitColor(s().hitRate)}>{meterBar(s().hitRate / 100, METER_CELLS, "\u25b0", "\u25b1")}</text>
-          <Show when={s().lastHitRate !== undefined}>
-            <text fg={trendView().color}>{trendView().text}</text>
+    <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
+      <ScrollArea hint={"esc \u21b5 关闭 \u00b7 滚轮翻页"} sep={SEP} pal={pal}>
+        <box flexDirection="column" gap={1}>
+          {/* ── SESSION HIT RATE：背景色块大数字（5 行点阵）+ 右侧进度条/趋势垂直居中 ── */}
+          <box flexDirection="row" gap={2}>
+            <box flexDirection="column" flexShrink={0}>
+              <For each={bigTextRows(s().hitRate.toFixed(1) + "%")}>
+                {(row) => bigRowText(row, hitColor(s().hitRate))}
+              </For>
+            </box>
+            <box flexDirection="column" justifyContent="center" gap={0}>
+              <text fg={hitColor(s().hitRate)}>{meterBar(s().hitRate / 100, METER_CELLS, "\u25b0", "\u25b1")}</text>
+              <Show when={s().lastHitRate !== undefined}>
+                <text fg={trendView().color}>{trendView().text}</text>
+              </Show>
+            </box>
+          </box>
+
+          {/* ── LAST MESSAGE ── */}
+          <Show when={s().lastHitRate !== undefined || s().stepCount !== undefined} fallback={<box />}>
+            <box>
+              <text>
+                <span style={{ fg: pal.muted }}>上次命中 </span>
+                {(() => {
+                  const lastHit = s().lastHitRate
+                  return lastHit !== undefined ? (
+                    <span style={{ fg: pal.text }}>{lastHit.toFixed(1)}%</span>
+                  ) : (
+                    <span style={{ fg: pal.muted }}>{"--"}</span>
+                  )
+                })()}
+                <Show when={s().stepCount !== undefined}>
+                  <span style={{ fg: pal.muted }}>{" \u00b7 步数 "}<span style={{ fg: pal.text }}>{s().stepCount}</span></span>
+                </Show>
+                <Show when={(s().lastCost ?? 0) > 0}>
+                  <span style={{ fg: pal.muted }}>{" \u00b7 上次成本 "}<span style={{ fg: pal.text }}>{fmtCost(s().lastCost ?? 0)}</span></span>
+                </Show>
+              </text>
+            </box>
           </Show>
-        </box>
-      </box>
 
-      {/* ── LAST MESSAGE ── */}
-      <Show when={s().lastHitRate !== undefined || s().stepCount !== undefined}>
-        <box>
-          <text>
-            <span style={{ fg: pal.muted }}>上次命中 </span>
-            {(() => {
-              const lastHit = s().lastHitRate
-              return lastHit !== undefined ? (
-                <span style={{ fg: pal.text }}>{lastHit.toFixed(1)}%</span>
-              ) : (
-                <span style={{ fg: pal.muted }}>{"--"}</span>
-              )
-            })()}
-            <Show when={s().stepCount !== undefined}>
-              <span style={{ fg: pal.muted }}>{" \u00b7 步数 "}<span style={{ fg: pal.text }}>{s().stepCount}</span></span>
-            </Show>
-            <Show when={(s().lastCost ?? 0) > 0}>
-              <span style={{ fg: pal.muted }}>{" \u00b7 上次成本 "}<span style={{ fg: pal.text }}>{fmtCost(s().lastCost ?? 0)}</span></span>
-            </Show>
-          </text>
-        </box>
-      </Show>
+          {/* ── TOKENS ── */}
+          <box flexDirection="column">
+            <text fg={pal.muted}>TOKEN 用量</text>
+            <box flexDirection="column" paddingLeft={2}>
+              <For each={[["输入", s().input], ["缓存读", s().read], ["缓存写", s().write], ["输出", s().output]] as Array<[string, number]>}>
+                {([label, value]) => (
+                  <box flexDirection="row">
+                    <text fg={pal.muted}>{label}</text>
+                    <text fg={pal.text} marginLeft="auto">{fmtTokens(value).padStart(8)}</text>
+                    <text fg={pal.primary}> {meterBar(share(value), METER_CELLS, "\u25b0", "\u25b1")}</text>
+                  </box>
+                )}
+              </For>
+            </box>
+            <box flexDirection="row" paddingLeft={2} marginTop={1}>
+              <text fg={pal.muted}>未命中（输入+写）</text>
+              <text fg={pal.muted} marginLeft="auto">{"\u2248 "}{fmtTokens(s().input + s().write)}</text>
+            </box>
+          </box>
 
-      {/* ── TOKENS ── */}
-      <box flexDirection="column">
-        <text fg={pal.muted}>TOKEN 用量</text>
-        <box flexDirection="column" paddingLeft={2}>
-          <For each={[["输入", s().input], ["缓存读", s().read], ["缓存写", s().write], ["输出", s().output]] as Array<[string, number]>}>
-            {([label, value]) => (
-              <box flexDirection="row">
-                <text fg={pal.muted}>{label}</text>
-                <text fg={pal.text} marginLeft="auto">{fmtTokens(value).padStart(8)}</text>
-                <text fg={pal.primary}> {meterBar(share(value), METER_CELLS, "\u25b0", "\u25b1")}</text>
+          {/* ── COST ── */}
+          {(() => {
+            const cost = s().cost
+            const saved = s().saved
+            if ((cost ?? 0) <= 0 && saved <= 0) return null
+            return (
+              <box flexDirection="column">
+                <text fg={pal.muted}>成本</text>
+                <box flexDirection="column" paddingLeft={2}>
+                  {(cost ?? 0) > 0 ? (
+                    <box flexDirection="row">
+                      <text fg={pal.muted}>会话</text>
+                      <text fg={pal.text} marginLeft="auto"><b>{fmtCost(cost!)}</b></text>
+                    </box>
+                  ) : null}
+                  {saved > 0 ? (
+                    <box flexDirection="row">
+                      <text fg={pal.success}>节省</text>
+                      <text fg={pal.success} marginLeft="auto"><b>{"~"}{fmtCost(saved).slice(1)}</b></text>
+                    </box>
+                  ) : null}
+                </box>
               </box>
-            )}
-          </For>
-        </box>
-        <box flexDirection="row" paddingLeft={2} marginTop={1}>
-          <text fg={pal.muted}>未命中（输入+写）</text>
-          <text fg={pal.muted} marginLeft="auto">{"\u2248 "}{fmtTokens(s().input + s().write)}</text>
-        </box>
-      </box>
+            )
+          })()}
 
-      {/* ── COST ── */}
-      {(() => {
-        const cost = s().cost
-        const saved = s().saved
-        if ((cost ?? 0) <= 0 && saved <= 0) return null
-        return (
-          <box flexDirection="column">
-            <text fg={pal.muted}>成本</text>
-            <box flexDirection="column" paddingLeft={2}>
-              {(cost ?? 0) > 0 ? (
-                <box flexDirection="row">
-                  <text fg={pal.muted}>会话</text>
-                  <text fg={pal.text} marginLeft="auto"><b>{fmtCost(cost!)}</b></text>
+          {/* ── MODEL ── */}
+          {(() => {
+            const st = s()
+            if (!st.providerID || !st.modelID) return null
+            return (
+              <box flexDirection="column">
+                <text fg={pal.muted}>模型</text>
+                <box flexDirection="column" paddingLeft={2}>
+                  <text fg={pal.text}>{st.providerID} / {st.modelID}</text>
+                  {st.pricing ? (
+                    <text fg={pal.muted}>输入 {fmtCost(st.pricing.in)} {"\u00b7"} 读 {fmtCost(st.pricing.read)} {"\u00b7"} 写 {fmtCost(st.pricing.write)} /Mtok</text>
+                  ) : null}
                 </box>
-              ) : null}
-              {saved > 0 ? (
-                <box flexDirection="row">
-                  <text fg={pal.success}>节省</text>
-                  <text fg={pal.success} marginLeft="auto"><b>{"~"}{fmtCost(saved).slice(1)}</b></text>
-                </box>
-              ) : null}
-            </box>
-          </box>
-        )
-      })()}
-
-      {/* ── MODEL ── */}
-      {(() => {
-        const st = s()
-        if (!st.providerID || !st.modelID) return null
-        return (
-          <box flexDirection="column">
-            <text fg={pal.muted}>模型</text>
-            <box flexDirection="column" paddingLeft={2}>
-              <text fg={pal.text}>{st.providerID} / {st.modelID}</text>
-              {st.pricing ? (
-                <text fg={pal.muted}>输入 {fmtCost(st.pricing.in)} {"\u00b7"} 读 {fmtCost(st.pricing.read)} {"\u00b7"} 写 {fmtCost(st.pricing.write)} /Mtok</text>
-              ) : null}
-            </box>
-          </box>
-        )
-      })()}
-
-      <text fg={pal.muted}>{SEP}</text>
-      <text fg={pal.muted}>esc {"\u21b5"} 关闭</text>
+              </box>
+            )
+          })()}
+        </box>
+      </ScrollArea>
     </box>
   )
 }
@@ -220,27 +235,33 @@ export function SubagentDialog(props: {
   const [now, setNow] = createSignal(Date.now())
   const [expanded, setExpanded] = createSignal<Record<string, boolean>>({})
   const [copiedId, setCopiedId] = createSignal<string>()
+  // 历史分区折叠态：undefined=自动（done+error > 阈值时折叠），用户点击后固化
+  const [histOpen, setHistOpen] = createSignal<boolean | undefined>(undefined)
 
   onMount(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000)
     onCleanup(() => clearInterval(timer))
   })
 
-  // running 呼吸相位：2s 周期亮暗交替（由 now tick 自驱动，不依赖外部告警定时器）
-  const breathOn = () => Math.floor(now() / 1000) % 2 === 0
+  // running 呼吸已由 StatusWord glitch 动效取代（fxTick 驱动）
 
-  const running = () => props.entries().filter((e) => e.status === "running").length
-  const done = () => props.entries().filter((e) => e.status === "done").length
-  const failed = () => props.entries().filter((e) => e.status === "error").length
-  const totalTok = () => props.entries().reduce((acc, e) => acc + (e.tokens ?? 0), 0)
-  const totalTime = () =>
-    props.entries().reduce((acc, e) => acc + ((e.endedAt ?? now()) - e.startedAt), 0)
+  const all = () => props.entries()
+  const runningList = () => all().filter((e) => e.status === "running")
+  const historyList = () => all().filter((e) => e.status !== "running")
+  const done = () => all().filter((e) => e.status === "done").length
+  const failed = () => all().filter((e) => e.status === "error").length
+  const totalTok = () => all().reduce((acc, e) => acc + (e.tokens ?? 0), 0)
+  const totalTime = () => all().reduce((acc, e) => acc + ((e.endedAt ?? now()) - e.startedAt), 0)
+  const histShown = () => histOpen() ?? historyList().length <= HISTORY_COLLAPSE_AT
 
-  function statusDot(e: SubEntry): { ch: string; color: string; breathing?: boolean } {
-    if (e.status === "running") return { ch: "\u25c6", color: pal.accent, breathing: true }
-    if (e.status === "done") return { ch: "\u25cf", color: pal.success }
-    return { ch: "\u2715", color: pal.error }
-  }
+  // ── 动效引擎（终端版 web 动效，shadcn glitch-text / neon-sign 的 TUI 移植）──
+  // 共享 150ms tick 驱动全弹窗动效（挂载期间运行，关闭即停；同 tick 同 seed 确定性出帧，
+  // solid 重算不跳变）。seed 掺入条目 id，各行闪变相位互异
+  const [fxTick, setFxTick] = createSignal(0)
+  onMount(() => {
+    const fx = setInterval(() => setFxTick((x) => x + 1), FX_MS)
+    onCleanup(() => clearInterval(fx))
+  })
 
   function toggle(id: string): void {
     setExpanded((prev) => ({ ...prev, [id]: !prev[id] }))
@@ -261,130 +282,239 @@ export function SubagentDialog(props: {
     }
   }
 
-  return (
-    <box flexDirection="column" gap={1} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
-      {/* ── 图例式汇总 + token/总耗时 ── */}
-      <box>
-        <text>
-          <span style={{ fg: pal.accent }}>{`\u25c6 ${running()} 运行中`}</span>
-          <span style={{ fg: pal.muted }}>{" \u00b7 "}</span>
-          <span style={{ fg: pal.success }}>{`\u25cf ${done()} 完成`}</span>
-          <Show when={failed() > 0}>
-            <span style={{ fg: pal.muted }}>{" \u00b7 "}</span>
-            <span style={{ fg: pal.error }}>{`\u2715 ${failed()} 失败`}</span>
+  /** 单行条目（v0.8：动效状态词10 + agent16 + 标题flex + 耗时9右 + token8右 + 模型11 + 标记1） */
+  const SubRow = (e: SubEntry): JSX.Element => {
+    const isOpen = () => Boolean(expanded()[e.id])
+    return (
+      <box flexDirection="row" onMouseUp={() => toggle(e.id)}>
+        <box width={10} flexShrink={0} overflow="hidden">
+          <StatusWord e={e} fxTick={fxTick()} />
+        </box>
+        <box width={16} flexShrink={0} overflow="hidden">
+          <text fg={pal.primary}>{truncateV(e.agent, 15)}{" "}</text>
+        </box>
+        {/* 标题列固定 31（降 1/4 防大片空白）：尾部弹性空隙把数值列组推至右缘，视觉成「左信息|右数值」分区 */}
+        <box width={31} flexShrink={0} overflow="hidden">
+          <text fg={pal.text}>{truncateV(e.title, 31)}</text>
+        </box>
+        <box flexGrow={1} flexShrink={1} />
+        <box width={9} justifyContent="flex-end" flexShrink={0}>
+          <text fg={e.status === "running" ? pal.text : pal.muted}>{elapsedOf(e, now())}</text>
+        </box>
+        <box width={8} justifyContent="flex-end" flexShrink={0}>
+          <text fg={pal.muted}>{e.tokens !== undefined ? fmtTokens(e.tokens) : "-"}</text>
+        </box>
+        <box width={26} flexShrink={0} overflow="hidden">
+          {/* 注意：universal 编译下空字符串会创建孤儿 text node（reconciler 报错），条件渲染替代 */}
+          <Show when={e.model} fallback={<box />}>
+            <text fg={pal.muted}>{" "}{truncateV(e.model!, 25)}</text>
           </Show>
-        </text>
+        </box>
+        <text flexShrink={0} fg={pal.muted}>{isOpen() ? "\u25bc" : "\u25b8"}</text>
       </box>
-      <text>
-        <span style={{ fg: pal.text }}><b>{fmtTokens(totalTok())}</b></span>
-        <span style={{ fg: pal.muted }}> tok</span>
-        <span style={{ fg: pal.muted }}>{" \u00b7 "}</span>
-        <span style={{ fg: pal.text }}><b>{fmtDuration(totalTime())}</b></span>
-        <span style={{ fg: pal.muted }}> 总耗时</span>
-      </text>
+    )
+  }
 
-      <Show
-        when={props.entries().length > 0}
-        fallback={<text fg={pal.muted}>本会话暂无子代理活动</text>}
-      >
-        <text fg={pal.muted}>{SEP}</text>
-        <box flexDirection="column">
-          <For each={props.entries()}>
-            {(e, i) => {
-              const dot = statusDot(e)
-              const isOpen = () => Boolean(expanded()[e.id])
-              const dimmed = () => Boolean(dot.breathing && !breathOn())
-              return (
-                <box flexDirection="column">
-                  {/* 行 1：状态点 + agent + 标题 + 展开 marker（整行点击 toggle） */}
-                  <box flexDirection="row" gap={1} onMouseUp={() => toggle(e.id)}>
-                    <text flexShrink={0} style={{ fg: dimmed() ? pal.muted : dot.color }}>{dot.ch}</text>
-                    <text fg={pal.primary} flexShrink={0}>{e.agent}</text>
-                    <text fg={pal.text} flexGrow={1} overflow="hidden">{e.title}</text>
-                    <text fg={pal.muted} flexShrink={0}>{isOpen() ? "\u25bc" : "\u25b8"}</text>
-                  </box>
-                  {/* 行 2：元信息缩进（⏱ 耗时 running 为警示色）· tokens · model */}
-                  <Show when={!isOpen()}>
-                    <box flexDirection="row" paddingLeft={2}>
-                      <text fg={e.status === "error" ? pal.error : pal.muted}>
-                        {e.status === "error" ? "已出错" : `\u23f1\uFE0E ${elapsedOf(e, now())}`}
-                      </text>
-                      <Show when={e.tokens}>
-                        <text fg={pal.muted}>{" \u00b7 "}{fmtTokens(e.tokens!)} tok</text>
-                      </Show>
-                      <Show when={e.model}>
-                        <text fg={pal.muted}>{" \u00b7 "}{e.model}</text>
-                      </Show>
-                    </box>
-                  </Show>
-                  {/* 展开态详情 */}
-                  <Show when={isOpen()}>
-                    <box flexDirection="column" paddingLeft={2}>
-                      <Show when={e.prompt}>
-                        <DetailRow label="提示词"><text fg={pal.muted}>{truncateLine(e.prompt!, 58)}</text></DetailRow>
-                      </Show>
-                      <Show when={e.model}>
-                        <DetailRow label="模型"><text fg={pal.text}>{e.model}</text></DetailRow>
-                      </Show>
-                      <Show when={e.tokens}>
-                        <DetailRow label="token">
-                          <text fg={pal.text}>{fmtTokens(e.tokens!)} tok</text>
-                          <Show when={e.tokensIn !== undefined || e.tokensOut !== undefined}>
-                            <text fg={pal.muted}>{"（入 "}{fmtTokens(e.tokensIn ?? 0)}{" \u00b7 出 "}{fmtTokens(e.tokensOut ?? 0) + "）"}</text>
-</Show>
-                        </DetailRow>
-                      </Show>
-                      <DetailRow label="时间">
-                        <text fg={pal.text}>开始 {hhmmss(e.startedAt)}</text>
-                        <text fg={e.status === "running" ? pal.warning : pal.muted}>{" \u00b7 "}{elapsedOf(e, now())}</text>
-                      </DetailRow>
-                      <Show when={e.todoTotal}>
-                        <DetailRow label="待办"><text fg={pal.text}>{e.todoDone ?? 0}/{e.todoTotal} 完成</text></DetailRow>
-                      </Show>
-                      <Show when={e.sessionId}>
-                        <DetailRow label="会话" muted={pal.muted}>
-                          <text fg={pal.muted}>{shorten(e.sessionId!)}</text>
-                          <text fg={copiedId() === e.sessionId ? pal.success : pal.accent} onMouseUp={() => copySession(e.sessionId!)}>
-                            {copiedId() === e.sessionId ? " [已复制]" : " [复制]"}
-                          </text>
-                        </DetailRow>
-                      </Show>
-                      <Show when={e.sessionId}>
-                        <box paddingLeft={10}>
-                          <text fg={pal.accent} onMouseUp={() => openSession(e)}>{"\u2192 打开会话"}</text>
-                        </box>
-                      </Show>
-                    </box>
-                  </Show>
-                  {/* item 隔断线（末项不加） */}
-                  <Show when={i() < props.entries().length - 1}>
-                    <box marginTop={1}><text fg={pal.muted}>{SEP}</text></box>
-                  </Show>
-                </box>
-              )
-            }}
-          </For>
+  /** 展开态详情（2~4 行：计时行必有，待办/prompt/会话按需）。
+   *  约束（crash 教训）：text 内只允许 string/span——嵌套 text/box 组件会触发
+   *  TextNodeRenderable.add 类型拒绝（TUI 直接崩溃）；带事件的行用 box>text 平铺 */
+  const SubDetail = (e: SubEntry): JSX.Element => (
+    <box flexDirection="column" paddingLeft={3}>
+      <text>
+        <span style={{ fg: e.status === "running" ? pal.warning : pal.muted }}>{"已用 "}{elapsedOf(e, now())}</span>
+        <Show when={e.tokensIn !== undefined || e.tokensOut !== undefined}>
+          <span style={{ fg: pal.muted }}>{" \u00b7 入 "}{fmtTokens(e.tokensIn ?? 0)}{" \u00b7 出 "}{fmtTokens(e.tokensOut ?? 0)}</span>
+        </Show>
+        <Show when={e.tokens !== undefined && e.tokensIn === undefined && e.tokensOut === undefined}>
+          <span style={{ fg: pal.muted }}>{" \u00b7 "}{fmtTokens(e.tokens!)} tok</span>
+        </Show>
+      </text>
+      <Show when={e.todoTotal} fallback={<box />}>
+        <text>
+          <span style={{ fg: pal.muted }}>{"待办 "}</span>
+          <span style={{ fg: pal.text }}>{e.todoDone ?? 0}/{e.todoTotal} 完成</span>
+        </text>
+      </Show>
+      <Show when={e.prompt} fallback={<box />}>
+        <text fg={pal.muted} overflow="hidden">{"prompt "}{truncateV(e.prompt!, 66)}</text>
+      </Show>
+      <Show when={e.sessionId} fallback={<box />}>
+        <box flexDirection="row">
+          <text fg={pal.muted}>{"会话 "}{shorten(e.sessionId!)}</text>
+          <text
+            fg={copiedId() === e.sessionId ? pal.success : pal.accent}
+            onMouseUp={() => copySession(e.sessionId!)}
+          >
+            {copiedId() === e.sessionId ? " [已复制]" : " [复制]"}
+          </text>
+          <text fg={pal.accent} onMouseUp={() => openSession(e)}>{" \u2192 打开会话"}</text>
         </box>
       </Show>
-
-      <text fg={pal.muted}>{SEP}</text>
-      <text fg={pal.muted}>点击 {"\u21b5"} 展开 {"\u00b7"} {"\u2192"} 打开会话 {"\u00b7"} esc {"\u21b5"} 关闭</text>
     </box>
   )
-}
 
-/** 详情行：label 固定宽 + 值（值区可混排多个 span） */
-function DetailRow(props: { label: string; muted?: string; children: JSX.Element }): JSX.Element {
   return (
-    <box flexDirection="row">
-      <text fg={props.muted ?? "#7A7A72"} flexShrink={0}>{pad(props.label, 9)}</text>
-      {props.children}
+    <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
+      <ScrollArea
+        hint={"esc \u21b5 关闭 \u00b7 滚轮翻页 \u00b7 点击 \u21b5 展开 \u00b7 \u2192 打开会话"}
+        sep={SG_SEP}
+        pal={pal}
+      >
+        <box flexDirection="column">
+          <Show
+            when={all().length > 0}
+            fallback={<text fg={pal.muted}>本会话暂无子代理活动</text>}
+          >
+            {/* ── 汇总仪表盘（1 行）：左三态计数（定稿霓虹色板）· 右总耗时+总 token ── */}
+            <box flexDirection="row">
+              <text flexShrink={0}>
+                <span style={{ fg: FX_PALETTE.running.base }}>{`\u25c6 ${runningList().length}`}</span>
+                <span style={{ fg: pal.muted }}>{" \u00b7 "}</span>
+                <span style={{ fg: FX_PALETTE.done.base }}>{`\u25cf ${done()}`}</span>
+                <Show when={failed() > 0}>
+                  <span style={{ fg: pal.muted }}>{" \u00b7 "}</span>
+                  <span style={{ fg: FX_PALETTE.error.base }}>{`\u2715 ${failed()}`}</span>
+                </Show>
+              </text>
+              <box flexGrow={1} />
+              <text flexShrink={0}>
+                <span style={{ fg: pal.text }}><b>{fmtDuration(totalTime())}</b></span>
+                <span style={{ fg: pal.muted }}>{" \u00b7 "}</span>
+                <span style={{ fg: pal.text }}><b>{fmtTokens(totalTok())}</b></span>
+                <span style={{ fg: pal.muted }}>{" tok"}</span>
+              </text>
+            </box>
+            <text fg={pal.border}>{SG_SEP}</text>
+
+            {/* ── 表头（列区与 SubRow 对齐：状态10 + agent16 + 标题31 + 弹性空隙 + 耗时9右 + token8右 + 模型26 + 1）── */}
+            <box flexDirection="row">
+              <box width={10} flexShrink={0}><text fg={pal.muted}>{"状态"}</text></box>
+              <box width={16} flexShrink={0}><text fg={pal.muted}>{"AGENT"}</text></box>
+              <box width={31} flexShrink={0}><text fg={pal.muted}>{"标题"}</text></box>
+              <box flexGrow={1} flexShrink={1} />
+              <box width={9} justifyContent="flex-end" flexShrink={0}><text fg={pal.muted}>{"耗时"}</text></box>
+              <box width={8} justifyContent="flex-end" flexShrink={0}><text fg={pal.muted}>{"TOKEN"}</text></box>
+              <box width={26} flexShrink={0}><text fg={pal.muted}>{" 模型"}</text></box>
+              <box width={1} flexShrink={0} />
+            </box>
+
+            {/* ── 分区一：运行中（n=0 整区隐藏；活跃任务固定视觉起点）── */}
+            <Show when={runningList().length > 0} fallback={<box />}>
+              <text fg={pal.accent}>{`\u25b6 运行中 ${runningList().length}`}</text>
+              <For each={runningList()}>
+                {(e) => (
+                  <box flexDirection="column">
+                    {SubRow(e)}
+                      <Show when={expanded()[e.id]} fallback={<box />}>{SubDetail(e)}</Show>
+                  </box>
+                )}
+              </For>
+              <text fg={pal.border}>{SG_SEP}</text>
+            </Show>
+
+            {/* ── 分区二：历史（>阈值默认折叠为 1 行计数，点击展开/收起）── */}
+            <Show when={historyList().length > 0} fallback={<box />}>
+              <text
+                fg={pal.muted}
+                onMouseUp={() => setHistOpen(!histShown())}
+              >
+                {histShown() ? `\u25be 已完成 ${done()}` : `\u25b8 已完成 ${done()}`}
+                <Show when={failed() > 0}>
+                  <span style={{ fg: pal.error }}>{" \u2715 "}{failed()}</span>
+                </Show>
+                {histShown() ? " \u00b7 点击收起" : " \u00b7 点击展开"}
+              </text>
+              <Show when={histShown()} fallback={<box />}>
+                <For each={historyList()}>
+                  {(e) => (
+                    <box flexDirection="column">
+                      {SubRow(e)}
+                    {/* fallback 空 box：solid Show 假值返回 "" 会产生孤儿 text node（reconciler 严格版直接崩） */}
+                    <Show when={expanded()[e.id]} fallback={<box />}>{SubDetail(e)}</Show>
+                    </box>
+                  )}
+                </For>
+              </Show>
+            </Show>
+          </Show>
+        </box>
+      </ScrollArea>
     </box>
   )
 }
 
-function truncateLine(s: string, max: number): string {
-  return s.length > max ? s.slice(0, max - 1) + "\u2026" : s
+/** 历史分区自动折叠阈值：条目数 ≤ 此值时默认展开（设计稿 v0.7 常量） */
+const HISTORY_COLLAPSE_AT = 6
+
+/** 子代理弹窗分隔线（xlarge 116 列面板 − padding 4 = 112 列） */
+const SG_SEP = "\u2500".repeat(112)
+
+// ---------------------------------------------------------------------------
+// 状态动效词（shadcn glitch-text / neon-sign 的 TUI 移植；配色定稿 v2 大佬钦定）
+// 三态统一「主色 + 对撞色」动效语言，脱离主题色板（高饱和真·霓虹）：
+// · running → Working glitch 快节奏：#00F0FF 青 + 故障字符替换 #FF2E88 品红
+// · done    → Finished neon 慢节奏：#4DC9FF 天蓝 + 漏气闪 #FF9E4D 暖橙（灯管漏气闪橘光）
+// · error   → Error neon 慢节奏：#FFE11A 黄 + 漏气闪 #B44CFF 紫
+// dim = 同色系暗版（整词压暗帧用——灯管变暗而非变灰）
+// 引擎：150ms 共享 tick + 确定性伪随机（同 tick 同 seed 恒定出帧，solid 重算不跳变）
+// ---------------------------------------------------------------------------
+
+const FX_MS = 150
+const GLITCH_CHARS = "#$%&@!?*"
+
+/** 霓虹色板（定稿 v2）：三态各 { 主色, 对撞色, 同色暗版 } */
+const FX_PALETTE: Record<SubStatus, { base: string; clash: string; dim: string }> = {
+  running: { base: "#00F0FF", clash: "#FF2E88", dim: "#007a85" },
+  done:    { base: "#4DC9FF", clash: "#FF9E4D", dim: "#1a6480" },
+  error:   { base: "#FFE11A", clash: "#B44CFF", dim: "#8a7a0a" },
+}
+
+/** 确定性伪随机：LCG 散列 → [0,1) */
+function fxRand(seed: number): number {
+  const x = Math.imul(seed ^ 0x9e3779b9, 0x85ebca6b) >>> 0
+  return ((x ^ (x >>> 13)) >>> 0) / 4294967295
+}
+
+/** 字符串定长散列种子（条目 id → 相位，各行闪变互异） */
+function strSeed(s: string): number {
+  let h = 2166136261
+  for (const c of s) h = Math.imul(h ^ (c.codePointAt(0) ?? 0), 16777619) >>> 0
+  return h >>> 0
+}
+
+type FxChar = { ch: string; kind: "base" | "clash" | "dim" }
+
+/** 动效帧计算（纯函数）：glitch 换字符（对撞色）+ 亮度抖动；neon 单字符漏气闪（对撞色）+ 整词压暗 */
+function statusFxFrame(word: string, status: SubStatus, tick: number, seed: number): FxChar[] {
+  const out: FxChar[] = []
+  const glitching = status === "running" && fxRand(seed + tick * 701 + 5) < 0.22
+  const wholeDim = status !== "running" && fxRand(seed + tick * 409 + 7) < 0.03
+  for (let i = 0; i < word.length; i++) {
+    const r = fxRand(seed + tick * 1013 + i * 31)
+    if (glitching && r < 0.4) {
+      out.push({ ch: GLITCH_CHARS[Math.floor(r * GLITCH_CHARS.length)], kind: "clash" })
+    } else if (status === "running") {
+      out.push({ ch: word[i], kind: r > 0.92 ? "dim" : "base" }) // 轻微亮度抖动
+    } else {
+      // neon dying-tube：~12% 帧选中相位的单字符漏气闪（对撞色）
+      const clash = fxRand(seed + tick * 211 + 3) < 0.12 && r < 0.5
+      out.push({ ch: word[i], kind: clash ? "clash" : wholeDim ? "dim" : "base" })
+    }
+  }
+  return out
+}
+
+/** 状态动效词组件（独立组件粒度：fxTick 变化只重渲本词，不动整行） */
+function StatusWord(props: { e: SubEntry; fxTick: number }): JSX.Element {
+  const word = props.e.status === "running" ? "Working" : props.e.status === "done" ? "Finished" : "Error"
+  const pal = FX_PALETTE[props.e.status]
+  return (
+    <text>
+      {statusFxFrame(word, props.e.status, props.fxTick, strSeed(props.e.id)).map((c) => (
+        <span style={{ fg: c.kind === "clash" ? pal.clash : c.kind === "dim" ? pal.dim : pal.base }}>{c.ch}</span>
+      ))}
+    </text>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -567,123 +697,124 @@ export function UsageDialog(props: { dbPath?: string; pal: Palette }): JSX.Eleme
   }
 
   return (
-    <box flexDirection="column" paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
-      {/* ── 标题行：标题左 + tab 右（flexGrow 占位，永不溢出；点击切换）── */}
-      <box flexDirection="row">
-        <text flexShrink={0}>
-          <span style={{ fg: pal.text }}><b>用量统计</b></span>
-          <span style={{ fg: pal.muted }}>{"  // USAGE"}</span>
-        </text>
-        <box flexGrow={1} />
-        <box flexDirection="row" gap={2} flexShrink={0}>
-          <For each={USAGE_WINDOWS}>
-            {(w) => (
-              <text
-                flexShrink={0}
-                onMouseUp={() => setWin(w)}
-                fg={w === win() ? pal.accent : pal.muted}
-              >
-                {w === win() ? `\u2039${U_TAB_LABEL[w]}\u203a` : `[${U_TAB_LABEL[w]}]`}
-              </text>
-            )}
-          </For>
-        </box>
-      </box>
-      <text fg={pal.border}>{U_SEP}</text>
-
-      {/* ── 非 ok 态：纯字面量 text ── */}
-      {s().status !== "ok" ? (
+    <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
+      <ScrollArea hint={"esc \u21b5 关闭 \u00b7 滚轮翻页 \u00b7 点击时间范围切换"} sep={U_SEP} pal={pal}>
         <box flexDirection="column">
-          <text fg={s().status === "empty" ? pal.muted : pal.error}>
-            {s().status === "empty" ? "该时间范围内暂无用量数据" : errorView()}
-          </text>
-          <Show when={s().status === "db-missing"}>
-            <text fg={pal.muted}>{"可在 status-bar.jsonc 的 usage.dbPath 指定数据库路径"}</text>
-            <text fg={pal.muted}>{"或设置 OPENCODE_DB 环境变量"}</text>
-          </Show>
-          <Show when={s().status === "query-error"}>
-            <text fg={pal.accent} onMouseUp={() => setTick((x) => x + 1)}>{"\u21bb 点击重试"}</text>
-          </Show>
-        </box>
-      ) : null}
-
-      <Show when={s().status === "ok"}>
-        {/* ── 总量区：bold + accent 承担视觉权重（响应式内联表达式，stats 变即更新）── */}
-        <text>
-          <span style={{ fg: pal.accent }}><b>{fmtTok(s().totals.tokens)}</b></span>
-          <span style={{ fg: pal.muted }}>{" token 总消耗"}</span>
-        </text>
-        <text>
-          <span style={{ fg: pal.text }}><b>{fmtInt(s().totals.requests)}</b></span>
-          <span style={{ fg: pal.muted }}>{" 次请求 \u00b7 "}</span>
-          <span style={{ fg: pal.text }}><b>{s().totals.models}</b></span>
-          <span style={{ fg: pal.muted }}>{" 个模型"}</span>
-        </text>
-
-        {/* ── 指标区 2×2：每半 label + flexGrow 占位 + 值右对齐（布局引擎保证对齐）── */}
-        <For each={metricPairs()}>
-          {(pair) => (
-            <box flexDirection="row">
-              <For each={pair}>
-                {(m) => (
-                  <box flexDirection="row" flexGrow={1}>
-                    <text fg={pal.muted} flexShrink={0}>{m.label}</text>
-                    <box flexGrow={1} />
-                    <text fg={m.color}><b>{m.value}</b></text>
-                    {m.hit !== undefined ? (
-                      <text fg={hitColor(m.hit)}>{" " + m.hit.toFixed(0) + "%"}</text>
-                    ) : null}
-                  </box>
+          {/* ── 标题行：标题左 + tab 右（flexGrow 占位，永不溢出；点击切换）── */}
+          <box flexDirection="row">
+            <text flexShrink={0}>
+              <span style={{ fg: pal.text }}><b>用量统计</b></span>
+              <span style={{ fg: pal.muted }}>{"  // USAGE"}</span>
+            </text>
+            <box flexGrow={1} />
+            <box flexDirection="row" gap={2} flexShrink={0}>
+              <For each={USAGE_WINDOWS}>
+                {(w) => (
+                  <text
+                    flexShrink={0}
+                    onMouseUp={() => setWin(w)}
+                    fg={w === win() ? pal.accent : pal.muted}
+                  >
+                    {w === win() ? `\u2039${U_TAB_LABEL[w]}\u203a` : `[${U_TAB_LABEL[w]}]`}
+                  </text>
                 )}
               </For>
-              {/* 落单指标补半宽占位，保持值列与上行对齐（2×2 栅格节奏） */}
-              {pair.length === 1 ? <box flexGrow={1} /> : null}
             </box>
-          )}
-        </For>
-        <text fg={pal.border}>{U_SEP}</text>
+          </box>
+          <text fg={pal.border}>{U_SEP}</text>
 
-        {/* ── 明细表：模型列 flexGrow（27 字符长名不截断）+ 数值列固定宽右对齐 ── */}
-        <box flexDirection="row">
-          <text fg={pal.muted} flexGrow={1}>模型</text>
-          <box width={10} justifyContent="flex-end" flexShrink={0}>
-            <text fg={pal.muted}>请求数</text>
-          </box>
-          <box width={12} justifyContent="flex-end" flexShrink={0}>
-            <text fg={pal.muted}>Token</text>
-          </box>
-        </box>
-        <For each={detail().shown}>
-          {(r) => (
+          {/* ── 非 ok 态：纯字面量 text ── */}
+          {s().status !== "ok" ? (
+            <box flexDirection="column">
+              <text fg={s().status === "empty" ? pal.muted : pal.error}>
+                {s().status === "empty" ? "该时间范围内暂无用量数据" : errorView()}
+              </text>
+              <Show when={s().status === "db-missing"} fallback={<box />}>
+                <text fg={pal.muted}>{"可在 status-bar.jsonc 的 usage.dbPath 指定数据库路径"}</text>
+                <text fg={pal.muted}>{"或设置 OPENCODE_DB 环境变量"}</text>
+              </Show>
+              <Show when={s().status === "query-error"} fallback={<box />}>
+                <text fg={pal.accent} onMouseUp={() => setTick((x) => x + 1)}>{"\u21bb 点击重试"}</text>
+              </Show>
+            </box>
+          ) : null}
+
+          <Show when={s().status === "ok"} fallback={<box />}>
+            {/* ── 总量区：bold + accent 承担视觉权重（响应式内联表达式，stats 变即更新）── */}
+            <text>
+              <span style={{ fg: pal.accent }}><b>{fmtTok(s().totals.tokens)}</b></span>
+              <span style={{ fg: pal.muted }}>{" token 总消耗"}</span>
+            </text>
+            <text>
+              <span style={{ fg: pal.text }}><b>{fmtInt(s().totals.requests)}</b></span>
+              <span style={{ fg: pal.muted }}>{" 次请求 \u00b7 "}</span>
+              <span style={{ fg: pal.text }}><b>{s().totals.models}</b></span>
+              <span style={{ fg: pal.muted }}>{" 个模型"}</span>
+            </text>
+
+            {/* ── 指标区 2×2：每半 label + flexGrow 占位 + 值右对齐（布局引擎保证对齐）── */}
+            <For each={metricPairs()}>
+              {(pair) => (
+                <box flexDirection="row">
+                  <For each={pair}>
+                    {(m) => (
+                      <box flexDirection="row" flexGrow={1}>
+                        <text fg={pal.muted} flexShrink={0}>{m.label}</text>
+                        <box flexGrow={1} />
+                        <text fg={m.color}><b>{m.value}</b></text>
+                        {m.hit !== undefined ? (
+                          <text fg={hitColor(m.hit)}>{" " + m.hit.toFixed(0) + "%"}</text>
+                        ) : null}
+                      </box>
+                    )}
+                  </For>
+                  {/* 落单指标补半宽占位，保持值列与上行对齐（2×2 栅格节奏） */}
+                  {pair.length === 1 ? <box flexGrow={1} /> : null}
+                </box>
+              )}
+            </For>
+            <text fg={pal.border}>{U_SEP}</text>
+
+            {/* ── 明细表：模型列 flexGrow（27 字符长名不截断）+ 数值列固定宽右对齐 ── */}
             <box flexDirection="row">
-              <text fg={pal.text} flexGrow={1} overflow="hidden">{truncateV(r.model, 28)}</text>
+              <text fg={pal.muted} flexGrow={1}>模型</text>
               <box width={10} justifyContent="flex-end" flexShrink={0}>
-                <text fg={pal.muted}>{fmtInt(r.requests)}</text>
+                <text fg={pal.muted}>请求数</text>
               </box>
               <box width={12} justifyContent="flex-end" flexShrink={0}>
-                <text fg={pal.text}>{fmtTok(r.total)}</text>
+                <text fg={pal.muted}>Token</text>
               </box>
             </box>
-          )}
-        </For>
-        {detail().rest ? (
-          <box flexDirection="row">
-            <text fg={pal.muted} flexGrow={1} overflow="hidden">
-              {`其他模型 · ${detail().rest!.count}`}
-            </text>
-            <box width={10} justifyContent="flex-end" flexShrink={0}>
-              <text fg={pal.muted}>{fmtInt(detail().rest!.requests)}</text>
-            </box>
-            <box width={12} justifyContent="flex-end" flexShrink={0}>
-              <text fg={pal.muted}>{fmtTok(detail().rest!.total)}</text>
-            </box>
-          </box>
-        ) : null}
-        <text fg={pal.border}>{U_SEP}</text>
-
-        {/* ── 页脚 ── */}
-        <text fg={pal.muted}>{"esc \u21b5 关闭 \u00b7 点击时间范围切换"}</text>
-      </Show>
+            <For each={detail().shown}>
+              {(r) => (
+                <box flexDirection="row">
+                  <text fg={pal.text} flexGrow={1} overflow="hidden">{truncateV(r.model, 28)}</text>
+                  <box width={10} justifyContent="flex-end" flexShrink={0}>
+                    <text fg={pal.muted}>{fmtInt(r.requests)}</text>
+                  </box>
+                  <box width={12} justifyContent="flex-end" flexShrink={0}>
+                    <text fg={pal.text}>{fmtTok(r.total)}</text>
+                  </box>
+                </box>
+              )}
+            </For>
+            {detail().rest ? (
+              <box flexDirection="row">
+                <text fg={pal.muted} flexGrow={1} overflow="hidden">
+                  {`其他模型 · ${detail().rest!.count}`}
+                </text>
+                <box width={10} justifyContent="flex-end" flexShrink={0}>
+                  <text fg={pal.muted}>{fmtInt(detail().rest!.requests)}</text>
+                </box>
+                <box width={12} justifyContent="flex-end" flexShrink={0}>
+                  <text fg={pal.muted}>{fmtTok(detail().rest!.total)}</text>
+                </box>
+              </box>
+            ) : null}
+            <text fg={pal.border}>{U_SEP}</text>
+          </Show>
+        </box>
+      </ScrollArea>
     </box>
   )
 }

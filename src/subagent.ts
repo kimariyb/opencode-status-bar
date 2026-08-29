@@ -161,8 +161,12 @@ function parentOf(api: TuiPluginApi, sid: string): string | undefined {
 export interface SubagentTracker {
   /** 当前面条目快照（running 优先，其余按启动时间倒序） */
   entries: () => SubEntry[]
-  /** 从指定会话的消息历史重建条目（事件错过兜底；初始/切会话时调用） */
-  scan: (sessionID?: string) => void
+  /**
+   * 从指定会话的消息历史重建条目（事件错过兜底；初始/切会话时调用）。
+   * forcePreload：强制重新预载持久化条目（重启后 kv/state ready 时重跑用——
+   * 此时 sessionID 未变，默认「会话切换才预载」的条件不会触发，KV 数据进不来）
+   */
+  scan: (sessionID?: string, opts?: { forcePreload?: boolean }) => void
   /** 条目变化订阅（面板据此触发重渲），返回退订函数 */
   onChange: (fn: () => void) => () => void
   dispose: () => void
@@ -171,6 +175,7 @@ export interface SubagentTracker {
 export function createSubagentTracker(api: TuiPluginApi, opts?: { ttlDays?: number }): SubagentTracker {
   const ttlDays = opts?.ttlDays ?? 3
   const TTL_MS = ttlDays > 0 ? ttlDays * 24 * 60 * 60_000 : 0
+  dbg(`tracker created (kv.ready=${String((api.kv as { ready?: boolean })?.ready)} state.ready=${String((api.state as { ready?: boolean })?.ready)})`)
 
   // 当前视图的桶及其归属会话；切换会话时整体换引用（各会话状态独立，不互相污染）
   let currentSid: string | undefined
@@ -199,6 +204,26 @@ export function createSubagentTracker(api: TuiPluginApi, opts?: { ttlDays?: numb
     return m
   }
 
+  // ── bootstrap：无归属会话时预载「KV 中最近访问」的会话桶 ──
+  // 覆盖重启/热重载后停留在 home 视图的场景：此时路由无 sessionID，
+  // scan(undefined) 恒空操作，面板将无数据——以最近会话兜底展示（与切走会话后的行为一致）
+  function bootstrapLatest(): boolean {
+    if (currentSid) return false
+    try {
+      const latest = Object.entries(loadAll())
+        .filter(([, r]) => (r?.entries?.length ?? 0) > 0)
+        .sort((a, b) => (b[1].ts ?? 0) - (a[1].ts ?? 0))[0]
+      if (!latest) return false
+      currentSid = latest[0]
+      entries = new Map(latest[1].entries.filter((e) => e?.id).map((e) => [e.id as string, e]))
+      notify()
+      dbg(`bootstrap: preload latest sid=${currentSid.slice(-8)} entries=${entries.size}`)
+      return true
+    } catch {
+      return false
+    }
+  }
+
   // TTL 清理（tracker 创建时执行一次；0 = 永久跳过）
   if (TTL_MS > 0) {
     try {
@@ -214,6 +239,8 @@ export function createSubagentTracker(api: TuiPluginApi, opts?: { ttlDays?: numb
       if (changed) saveAll(data)
     } catch {}
   }
+  // kv 已就绪（热重载场景）时立即预载最近会话；未就绪（重启）由兜底④自愈补做
+  bootstrapLatest()
 
   let persistTimer: ReturnType<typeof setTimeout> | undefined
   const flushSid = (sid: string, list: Map<string, SubEntry>): void => {
@@ -394,12 +421,21 @@ export function createSubagentTracker(api: TuiPluginApi, opts?: { ttlDays?: numb
   // ── 兜底① scan+merge：遍历会话消息 parts 重建条目 ──
   // untrack：隔离对 api.state.* 的读取，确保外层 createEffect 只依赖 sessionID
   // 会话切换时先预载该会话的持久化条目（cache 优先，KV 兜底），startedAt/终态保真
-  function scan(sessionID?: string): void {
+  function scan(sessionID?: string, opts?: { forcePreload?: boolean }): void {
     if (!sessionID) return
     untrack(() => {
-      if (sessionID !== currentSid) {
+      if (opts?.forcePreload || sessionID !== currentSid) {
         currentSid = sessionID
-        entries = new Map(globalEntryCache.get(sessionID) ?? loadFromKV(sessionID))
+        if (opts?.forcePreload) {
+          // ready 重扫：KV 为权威历史源；cache 可能只是窗口期事件写入的残缺桶
+          // （早期 scan 在 kv ready 前执行时，upsert 会把空桶提升进 cache），
+          // 故按 id 合并、cache 条目优先（保留更新的运行时状态），防止 KV 历史被残缺 cache 遮蔽
+          const merged = new Map(loadFromKV(sessionID))
+          for (const [id, e] of globalEntryCache.get(sessionID) ?? []) merged.set(id, e)
+          entries = merged
+        } else {
+          entries = new Map(globalEntryCache.get(sessionID) ?? loadFromKV(sessionID))
+        }
         // TTL 续期：有历史条目时刷新该会话访问时间
         try {
           const data = loadAll()
@@ -409,7 +445,7 @@ export function createSubagentTracker(api: TuiPluginApi, opts?: { ttlDays?: numb
           }
         } catch {}
         notify()
-        dbg(`switch sid=${sessionID.slice(-8)} preload cache/kv entries=${entries.size}`)
+        dbg(`switch sid=${sessionID.slice(-8)} force=${opts?.forcePreload ?? false} preload entries=${entries.size}`)
       }
       try {
         const msgs = api.state.session.messages(sessionID) as unknown as Array<{ id?: string }>
@@ -508,8 +544,25 @@ export function createSubagentTracker(api: TuiPluginApi, opts?: { ttlDays?: numb
   // ── 兜底② 轮询：running 条目实时刷新 + reconcile 自愈 + ③僵尸回收 ──
   const POLL_MS = 500
   const STALE_MS = 30 * 60_000
+  // ── 兜底④ 启动自愈（前 30s，每 2s 一次）：重启/热重载时序竞态下 effect 可能漏扫
+  // （实证：插件热重载风暴后新实例无 scan，内存空而 KV 有数据，面板 item 消失）——
+  // ④a 无归属会话（home 视图期间重建）→ bootstrap 预载最近会话桶；
+  // ④b scan 过但预载落空（kv ready 前的窗口期）→ KV 就绪后 force 重预载。30s 后停止
+  let healTicks = 0
   const pollTimer = setInterval(() => {
     try {
+      if (healTicks < 60 && ++healTicks % 4 === 0) {
+        if (!currentSid) {
+          bootstrapLatest()
+        } else if (entries.size === 0) {
+          try {
+            if (api.kv.ready && (loadAll()[currentSid]?.entries?.length ?? 0) > 0) {
+              dbg(`self-heal: sid=${currentSid.slice(-8)} empty in-memory but KV has data → force preload`)
+              scan(currentSid, { forcePreload: true })
+            }
+          } catch {}
+        }
+      }
       let changed = false
       for (const e of entries.values()) {
         if (e.status !== "running") continue

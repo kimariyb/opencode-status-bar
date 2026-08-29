@@ -497,8 +497,12 @@ function StatusBarPanel(props: {
   })
   const runningSubs = createMemo(() => subEntries().filter((e) => e.status === "running").length)
   // 兜底①：初始/会话切换时从消息历史重建条目（事件错过的子代理不丢）
+  // ready 门槛：重启后 kv（持久化条目）与 state（消息 parts）均异步就绪——
+  // adapters 的 ready getter 直通宿主 signal，翻转时本 effect 自动重跑重扫；
+  // 窗口期内跳过（此时 scan 只会白跑：KV 读到空、messages 为空）
   createEffect(() => {
-    tracker.scan(currentSessionID())
+    if (!props.api.kv.ready || !props.api.state.ready) return
+    tracker.scan(currentSessionID(), { forcePreload: true })
   })
 
   // ── 余额查询（事件驱动：每轮回复完成后刷新；启动时立即查一次）──
@@ -555,6 +559,9 @@ function StatusBarPanel(props: {
     props.api.ui.dialog.replace(() => (
       <SubagentDialog api={props.api} entries={() => subEntries()} pal={pal()} />
     ))
+    // 设计稿定稿 v2：xlarge 116 列（模型名 26 列全展示，标题 42 列）。
+    // 注意：宿主 replace() 会把 size 重置回 medium，setSize 必须在其后调用
+    try { props.api.ui.dialog.setSize("xlarge") } catch {}
   }
   function openUsageDialog() {
     props.api.ui.dialog.replace(() => (
@@ -735,13 +742,20 @@ function StatusBarPanel(props: {
           <text fg={pal().muted} flexShrink={0}>{"\u2500".repeat(Math.max(MIN_PANEL_WIDTH, panelWidth()) - 2)}</text>
         </Show>
 
-        {/* ── 子代理行（有活动才显示；点击开列表弹窗）── */}
+        {/* ── 子代理行（有活动才显示；≡ 图标与其他 item 同构；左名称 · 右三态计数，点击开列表弹窗）── */}
         <Show when={cfg.sections.subagent && subEntries().length > 0}>
           <text onMouseUp={openSubagentDialog}>
-            <span style={{ fg: pal().accent }}>{"\u25c6 "}</span>
-            <span style={{ fg: pal().text }}>task</span>
-            <span>{" ".repeat(Math.max(1, panelWidth() - 4 - visualWidth("task") - visualWidth(sgSummaryText(subEntries()))))}</span>
-            <span style={{ fg: pal().muted }}>{sgSummaryText(subEntries())}</span>
+            <span style={{ fg: pal().accent }}>{"\u2261 "}</span>
+            <span style={{ fg: pal().text }}>{"子代理 "}</span>
+            <span>{" ".repeat(Math.max(1, panelWidth() - 4 - visualWidth("≡ 子代理 ") - sgIconRowWidth(subEntries())))}</span>
+            <For each={sgIconParts(subEntries())}>
+              {(p, i) => (
+                <>
+                  {i() > 0 ? " " : ""}
+                  <span style={{ fg: p.color }}>{p.text}</span>
+                </>
+              )}
+            </For>
           </text>
         </Show>
       </Show>
@@ -755,17 +769,22 @@ function usageSummaryText(stats: UsageStats): string {
   return `今日 ${fmtUsageTokens(stats.totals.tokens)} tok`
 }
 
-/** 子代理行右侧摘要：⠋2 run · 1 done · 8.2k tok */
-function sgSummaryText(entries: SubEntry[]): string {  const run = entries.filter((e) => e.status === "running").length
+/** 子代理行图标组（定稿 v2 霓虹色板）：◆ n(青) ● n(天蓝) ✕ n(黄)，图标+空格+数字，各态有才显示 */
+function sgIconParts(entries: SubEntry[]): Array<{ text: string; color: string }> {
+  const run = entries.filter((e) => e.status === "running").length
   const done = entries.filter((e) => e.status === "done").length
   const err = entries.filter((e) => e.status === "error").length
-  const tok = entries.reduce((acc, e) => acc + (e.tokens ?? 0), 0)
-  const parts: string[] = []
-  if (run > 0) parts.push(`${run} run`)
-  if (done > 0) parts.push(`${done} done`)
-  if (err > 0) parts.push(`${err} failed`)
-  if (tok > 0) parts.push(fmtTokens(tok) + " tok")
-  return parts.join(" \u00b7 ")
+  const parts: Array<{ text: string; color: string }> = []
+  if (run > 0) parts.push({ text: `\u25c6 ${run}`, color: "#00F0FF" })
+  if (done > 0) parts.push({ text: `\u25cf ${done}`, color: "#4DC9FF" })
+  if (err > 0) parts.push({ text: `\u2715 ${err}`, color: "#FFE11A" })
+  return parts
+}
+
+/** 图标组总视觉宽（◆ 1 列 + 空格 + 数字位数，组间空格；与 sgIconParts 文本格式一致） */
+function sgIconRowWidth(entries: SubEntry[]): number {
+  const parts = sgIconParts(entries)
+  return parts.reduce((acc, p) => acc + p.text.length, 0) + Math.max(0, parts.length - 1)
 }
 
 // ---------------------------------------------------------------------------
