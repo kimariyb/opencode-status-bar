@@ -7,7 +7,7 @@
 
 import type { JSX } from "@opentui/solid"
 import { useTerminalDimensions } from "@opentui/solid"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { Plugin } from "@opencode/plugin/tui"
 import { execSync } from "node:child_process"
 import { createSignal, onMount, onCleanup, For, Show, createMemo } from "solid-js"
 import type { CacheStats } from "./cache"
@@ -226,7 +226,7 @@ export function CacheDialog(props: { stats: () => CacheStats; pal: Palette }): J
 // ---------------------------------------------------------------------------
 
 export function SubagentDialog(props: {
-  api: TuiPluginApi
+  context: Plugin.Context
   /** 条目 accessor（保持响应式：tracker 更新时弹窗实时刷新） */
   entries: () => SubEntry[]
   pal: Palette
@@ -270,8 +270,8 @@ export function SubagentDialog(props: {
   function openSession(e: SubEntry): void {
     if (!e.sessionId) return
     try {
-      props.api.ui.dialog.clear() // 先关弹窗再跳转，避免弹窗残留
-      props.api.route.navigate("session", { sessionID: e.sessionId })
+      props.context.ui.dialog.clear() // 先关弹窗再跳转，避免弹窗残留
+      props.context.ui.router.navigate({ type: "session", sessionID: e.sessionId })
     } catch {}
   }
 
@@ -329,12 +329,6 @@ export function SubagentDialog(props: {
           <span style={{ fg: pal.muted }}>{" \u00b7 "}{fmtTokens(e.tokens!)} tok</span>
         </Show>
       </text>
-      <Show when={e.todoTotal} fallback={<box />}>
-        <text>
-          <span style={{ fg: pal.muted }}>{"待办 "}</span>
-          <span style={{ fg: pal.text }}>{e.todoDone ?? 0}/{e.todoTotal} 完成</span>
-        </text>
-      </Show>
       <Show when={e.prompt} fallback={<box />}>
         <text fg={pal.muted} overflow="hidden">{"prompt "}{truncateV(e.prompt!, 66)}</text>
       </Show>

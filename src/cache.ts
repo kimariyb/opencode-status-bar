@@ -6,7 +6,7 @@
 // 弹窗指标：会话/单消息双命中率、趋势 delta、步数、成本与模型单价。
 // ---------------------------------------------------------------------------
 
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { Plugin } from "@opencode/plugin/tui"
 
 export interface ModelPricing {
   in: number // $ / Mtok
@@ -46,12 +46,12 @@ function hitOf(t: { input?: number; output?: number; cache?: { read?: number; wr
   return (num(t.cache?.read) / denom) * 100
 }
 
-export function collectCacheStats(api: TuiPluginApi, sessionID?: string): CacheStats {
+export function collectCacheStats(context: Plugin.Context, sessionID?: string): CacheStats {
   if (!sessionID) return EMPTY
   try {
-    const session = api.state.session.get(sessionID) as
+    const session = context.data.session.get(sessionID) as
       | {
-          tokens?: { input?: number; output?: number; cache?: { read?: number; write?: number } }
+          tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
           cost?: number
           model?: { providerID?: string; id?: string }
         }
@@ -60,22 +60,24 @@ export function collectCacheStats(api: TuiPluginApi, sessionID?: string): CacheS
     let input = num(session?.tokens?.input)
     let read = num(session?.tokens?.cache?.read)
     let write = num(session?.tokens?.cache?.write)
-    let output = num(session?.tokens?.output)
+    // V2 tokens 分离 reasoning，归入输出（与 usage.ts 口径一致）
+    let output = num(session?.tokens?.output) + num(session?.tokens?.reasoning)
     const fallback = session?.tokens == null
 
     // 消息遍历：fallback 时累加总量；同时收集单消息指标（last/trend/steps/lastCost）
+    // V2：assistant 消息用 type 判别（无 role 字段）
     let stepCount = 0
     let lastHit: number | undefined
     let prevHit: number | undefined
     let lastCost: number | undefined
     if (fallback) input = read = write = output = 0
-    const msgs = api.state.session.messages(sessionID) as unknown as Array<{
-      role?: string
+    const msgs = context.data.session.message.list(sessionID) as unknown as Array<{
+      type?: string
       cost?: number
-      tokens?: { input?: number; output?: number; cache?: { read?: number; write?: number } }
+      tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
     }>
     for (const msg of msgs ?? []) {
-      if (msg?.role !== "assistant") continue
+      if (msg?.type !== "assistant") continue
       stepCount++
       if (typeof msg.cost === "number") lastCost = msg.cost
       const t = msg.tokens
@@ -84,7 +86,7 @@ export function collectCacheStats(api: TuiPluginApi, sessionID?: string): CacheS
         input += num(t.input)
         read += num(t.cache?.read)
         write += num(t.cache?.write)
-        output += num(t.output)
+        output += num(t.output) + num(t.reasoning)
       }
       const hit = hitOf(t)
       if (hit !== undefined) {
@@ -110,19 +112,15 @@ export function collectCacheStats(api: TuiPluginApi, sessionID?: string): CacheS
     const pid = session?.model?.providerID
     const mid = session?.model?.id
     if (pid && mid) {
-      for (const provider of api.state.provider as unknown as Array<{
-        id?: string
-        models?: Record<string, { cost?: { input?: number; cache?: { read?: number; write?: number } } }>
-      }>) {
-        if (provider?.id !== pid) continue
-        const cost = provider.models?.[mid]?.cost
-        if (cost) {
-          pricing = { in: num(cost.input), read: num(cost.cache?.read), write: num(cost.cache?.write) }
-          if (pricing.in > pricing.read && read > 0) {
-            saved = (read * (pricing.in - pricing.read)) / 1_000_000
-          }
+      // V2：定价在 location.model（ProviderInfo 不再内嵌 models）；未同步时 list() 返回 undefined → 降级无定价
+      const models = context.data.location.model.list()
+      const mi = (models ?? []).find((m) => m.providerID === pid && (m.id === mid || m.modelID === mid))
+      const cost = mi?.cost?.find((c) => !c.tier) ?? mi?.cost?.[0]
+      if (cost) {
+        pricing = { in: num(cost.input), read: num(cost.cache?.read), write: num(cost.cache?.write) }
+        if (pricing.in > pricing.read && read > 0) {
+          saved = (read * (pricing.in - pricing.read)) / 1_000_000
         }
-        break
       }
     }
 

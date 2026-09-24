@@ -15,6 +15,6 @@ await esbuild.build({
   format: "esm",
   platform: "node",
   bundle: true,
-  external: ["@opencode-ai/*", "@opentui/*", "solid-js", "node:*"],
+  external: ["@opencode/*", "@opentui/*", "solid-js", "node:*"],
   plugins: [solidPlugin({ solid: { moduleName: "@opentui/solid", generate: "universal" } })],
 })

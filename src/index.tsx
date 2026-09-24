@@ -1,15 +1,8 @@
 /** @jsxImportSource @opentui/solid */
 
 import type { JSX } from "@opentui/solid"
-import type {
-  TuiPlugin,
-  TuiPluginApi,
-  TuiSlotContext,
-  TuiSlotPlugin,
-  TuiPluginModule,
-  TuiThemeCurrent,
-} from "@opencode-ai/plugin/tui"
-import { createMemo, createSignal, createEffect, onMount, onCleanup, Show, For } from "solid-js"
+import type { Plugin } from "@opencode/plugin/tui"
+import { createMemo, createSignal, createEffect, onMount, onCleanup, untrack, Show, For } from "solid-js"
 import { execSync } from "node:child_process"
 import { readFileSync, readdirSync, writeFileSync, appendFileSync } from "node:fs"
 import { homedir } from "node:os"
@@ -410,15 +403,16 @@ const KV_PREFIX = "status_bar"
 // 侧边栏面板组件
 // ---------------------------------------------------------------------------
 function StatusBarPanel(props: {
-  theme: TuiThemeCurrent
-  api: TuiPluginApi
+  context: Plugin.Context
+  sessionID: string
 }): JSX.Element {
   const cfg = readStatusBarConfig(STATUS_BAR_CONFIG_PATH)
   const [nowTick, setNowTick] = createSignal(Date.now())
   const [battery, setBattery] = createSignal<BatteryInfo>({ percent: null, charging: false })
   const [balances, setBalances] = createSignal<BalanceState[]>([])
   const [panelWidth, setPanelWidth] = createSignal(DEFAULT_PANEL_WIDTH)
-  const [open, setOpen] = createSignal(true)
+  // 折叠状态持久化（V2 storage.store，自动前缀 plugin.<id>.，跨重启存活）
+  const [panelStore, mutatePanel] = props.context.storage.store(KV_PREFIX, { initial: { open: true } })
   const [alertPhase, setAlertPhase] = createSignal(0)
   const [chargePhase, setChargePhase] = createSignal(0)
   const [clockPhase, setClockPhase] = createSignal(0)
@@ -426,20 +420,21 @@ function StatusBarPanel(props: {
   const [sgTick, setSgTick] = createSignal(0)
   const [usageTick, setUsageTick] = createSignal(0)
   let boxEl: any
+  const open = () => panelStore.open
 
   // ── 主题色（自动降低饱和度，保持与 opencode 原生面板视觉一致）──
+  // V2 ResolvedTheme 为 RGBA 对象（desaturateTo → rgb() 已兼容 {r,g,b}）
   const pal = createMemo(() => {
-    const t = props.theme as Record<string, unknown>
-    const sat = (k: string, fb: string) => desaturateTo(t[k], MAX_SAT, fb)
+    const t = props.context.theme
     return {
-      primary: sat("primary",   FALLBACK.primary),
-      text:    sat("text",      FALLBACK.text),
-      muted:   sat("textMuted", FALLBACK.muted),
-      success: sat("success",   FALLBACK.success),
-      warning: sat("warning",   FALLBACK.warning),
-      error:   sat("error",     FALLBACK.error),
-      border:  sat("border",    FALLBACK.border),
-      accent:  sat("accent",    FALLBACK.accent),
+      primary: desaturateTo(t.text.action.primary.base, MAX_SAT, FALLBACK.primary),
+      text:    desaturateTo(t.text.base, MAX_SAT, FALLBACK.text),
+      muted:   desaturateTo(t.text.muted, MAX_SAT, FALLBACK.muted),
+      success: desaturateTo(t.text.feedback.success.base, MAX_SAT, FALLBACK.success),
+      warning: desaturateTo(t.text.feedback.warning.base, MAX_SAT, FALLBACK.warning),
+      error:   desaturateTo(t.text.feedback.error.base, MAX_SAT, FALLBACK.error),
+      border:  desaturateTo(t.border.base, MAX_SAT, FALLBACK.border),
+      accent:  desaturateTo(t.hue.accent[500], MAX_SAT, FALLBACK.accent),
     }
   })
 
@@ -473,14 +468,10 @@ function StatusBarPanel(props: {
     return { bar, pct: `${b.percent}%`, charging: b.charging }
   })
 
-  // ── 当前会话与缓存统计 ──
-  const currentSessionID = createMemo(() => {
-    const r = props.api.route.current
-    return r.name === "session" ? (r.params as { sessionID?: string }).sessionID : undefined
-  })
+  // ── 当前会话与缓存统计（sessionID 由 slot render input 传入，文档保证响应式）──
   const cacheStats = createMemo(() => {
     cacheTick()
-    return collectCacheStats(props.api, currentSessionID())
+    return collectCacheStats(props.context, props.sessionID)
   })
 
   // ── 当日用量摘要（入口行展示 today 窗口总量；数据层自带 mtime 缓存兜底）──
@@ -489,20 +480,22 @@ function StatusBarPanel(props: {
     return collectUsageStats("today", { dbPath: cfg.usage.dbPath })
   })
 
-  // ── 子代理追踪（KV 持久化 + 模块级缓存：记录跨视图切换/组件重建/重启存活）──
-  const tracker: SubagentTracker = createSubagentTracker(props.api, { ttlDays: cfg.subagent.ttlDays })
+  // ── 子代理追踪（storage.store 持久化 + 模块级缓存：跨视图切换/组件重建/重启存活）──
+  const tracker: SubagentTracker = createSubagentTracker(props.context, { ttlDays: cfg.subagent.ttlDays })
   const subEntries = createMemo(() => {
     sgTick()
     return tracker.entries()
   })
   const runningSubs = createMemo(() => subEntries().filter((e) => e.status === "running").length)
-  // 兜底①：初始/会话切换时从消息历史重建条目（事件错过的子代理不丢）
-  // ready 门槛：重启后 kv（持久化条目）与 state（消息 parts）均异步就绪——
-  // adapters 的 ready getter 直通宿主 signal，翻转时本 effect 自动重跑重扫；
-  // 窗口期内跳过（此时 scan 只会白跑：KV 读到空、messages 为空）
+  // 兜底①：初始/会话切换时从消息 content 重建条目（V2 无 ready 门槛：
+  // message.list 同步返回宿主内存快照；先 sync 预热再 force 重扫补齐）
   createEffect(() => {
-    if (!props.api.kv.ready || !props.api.state.ready) return
-    tracker.scan(currentSessionID(), { forcePreload: true })
+    const sid = props.sessionID
+    if (!sid) return
+    untrack(() => {
+      const doScan = () => tracker.scan(sid, { forcePreload: true })
+      void props.context.data.session.message.sync(sid).then(doScan, doScan)
+    })
   })
 
   // ── 余额查询（事件驱动：每轮回复完成后刷新；启动时立即查一次）──
@@ -549,22 +542,22 @@ function StatusBarPanel(props: {
     }
   }
 
-  // ── 弹窗（宿主 dialog.replace 已自带全屏遮罩与居中容器，内容直接裸放；传 accessor 保持响应式）──
+  // ── 弹窗（V2 ui.dialog.show + set；show 自带遮罩与居中容器，内容直接裸放；传 accessor 保持响应式）──
   function openCacheDialog() {
-    props.api.ui.dialog.replace(() => (
+    props.context.ui.dialog.show(() => (
       <CacheDialog stats={() => cacheStats()} pal={pal()} />
     ))
   }
   function openSubagentDialog() {
-    props.api.ui.dialog.replace(() => (
-      <SubagentDialog api={props.api} entries={() => subEntries()} pal={pal()} />
+    props.context.ui.dialog.show(() => (
+      <SubagentDialog context={props.context} entries={() => subEntries()} pal={pal()} />
     ))
     // 设计稿定稿 v2：xlarge 116 列（模型名 26 列全展示，标题 42 列）。
-    // 注意：宿主 replace() 会把 size 重置回 medium，setSize 必须在其后调用
-    try { props.api.ui.dialog.setSize("xlarge") } catch {}
+    // 注意：show() 会把 size 重置回 medium，set() 必须在其后调用
+    try { props.context.ui.dialog.set({ size: "xlarge" }) } catch {}
   }
   function openUsageDialog() {
-    props.api.ui.dialog.replace(() => (
+    props.context.ui.dialog.show(() => (
       <UsageDialog dbPath={cfg.usage.dbPath} pal={pal()} />
     ))
   }
@@ -583,10 +576,7 @@ function StatusBarPanel(props: {
   onMount(() => {
     setPanelWidth(DEFAULT_PANEL_WIDTH)
 
-    // 恢复折叠状态
-    try {
-      setOpen(Boolean(props.api.kv.get(`${KV_PREFIX}.open`, true)))
-    } catch {}
+    // 折叠状态已由 storage.store 持久化（open() 直读 store），无需在此恢复
 
     // 测量面板宽度
     if (boxEl && typeof boxEl.width === "number" && boxEl.width > 0) {
@@ -616,16 +606,15 @@ function StatusBarPanel(props: {
       ? setInterval(() => setClockPhase((p) => (p === 0 ? 1 : 0)), cfg.animations.clock.intervalMs)
       : undefined
 
-    // 缓存统计：消息/回合事件驱动重算
+    // 缓存统计：V2 无 message.* 事件 → session.usage.updated（token/费用变化）+ session.idle（回合结束）驱动重算
     const bumpCache = () => setCacheTick((x) => x + 1)
-    const offMsg = props.api.event.on("message.updated", bumpCache)
-    const offPart = props.api.event.on("message.part.updated", bumpCache)
-    const offCacheIdle = props.api.event.on("session.idle", bumpCache)
+    const offUsage = props.context.data.on("session.usage.updated", bumpCache)
+    const offCacheIdle = props.context.data.on("session.idle", bumpCache)
 
     // 余额 + 用量：首次立即查询；session.idle 尾沿防抖刷新（流式期间不触发）
     if (balanceConfigs.length > 0) refreshBalances()
     let idleDebounce: ReturnType<typeof setTimeout> | undefined
-    const offIdle = props.api.event.on("session.idle", () => {
+    const offIdle = props.context.data.on("session.idle", () => {
       clearTimeout(idleDebounce)
       idleDebounce = setTimeout(() => {
         if (balanceConfigs.length > 0) refreshBalances()
@@ -643,7 +632,7 @@ function StatusBarPanel(props: {
       if (alertTimer) clearInterval(alertTimer)
       if (chargeTimer) clearInterval(chargeTimer)
       if (clockTimer) clearInterval(clockTimer)
-      offMsg(); offPart(); offCacheIdle(); offSg()
+      offUsage(); offCacheIdle(); offSg()
       tracker.dispose()
     })
   })
@@ -653,8 +642,7 @@ function StatusBarPanel(props: {
 
   const toggleOpen = () => {
     const n = !open()
-    try { props.api.kv.set(`${KV_PREFIX}.open`, n) } catch {}
-    setOpen(n)
+    void mutatePanel((d) => { d.open = n })
   }
 
   return (
@@ -914,26 +902,19 @@ function valueColorOf(h: "ok" | "warn" | "alert", b: BalanceState, pal: { succes
 }
 
 
-function createSidebarSlot(api: TuiPluginApi): TuiSlotPlugin {
-  return {
-    order: 90,
-    slots: {
-      sidebar_content(ctx: TuiSlotContext): JSX.Element {
-        return <StatusBarPanel theme={ctx.theme.current} api={api} />
-      },
-    },
-  }
-}
-
-const tui: TuiPlugin = async (api: TuiPluginApi) => {
-  // 调试日志 — 写文件确认插件被加载
-  try { appendFileSync("/tmp/opencode-status-bar-debug.log", `[${new Date().toISOString()}] TUI plugin loaded\n`) } catch {}
-  api.slots.register(createSidebarSlot(api))
-}
-
-const mod: TuiPluginModule & { id: string } = {
+const mod: Plugin.Definition = {
   id: "opencode-status-bar",
-  tui,
+  setup(context) {
+    // 调试日志 — 写文件确认插件被加载
+    try { appendFileSync("/tmp/opencode-status-bar-debug.log", `[${new Date().toISOString()}] TUI plugin loaded\n`) } catch {}
+    // 侧边栏槽位（append = 追加在 sidebar.content 边界末尾，对应 V1 order:90；
+    // 返回释放器供宿主热重载卸载）。render 的 input.sessionID 文档保证响应式 →
+    // 会话切换时面板自动重渲染
+    return context.ui.slot({
+      append: "sidebar.content",
+      render: (input) => <StatusBarPanel context={context} sessionID={input.sessionID} />,
+    })
+  },
 }
 
 export default mod

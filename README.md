@@ -32,15 +32,14 @@
 ### 安装
 
 ```bash
-opencode plugin opencode-status-bar
+opencode plugin add opencode-status-bar
 ```
 
-或手动在 `~/.config/opencode/tui.jsonc` 中添加：
+或手动在 `~/.config/opencode/opencode.json` 中添加：
 
-```jsonc
+```json
 {
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": ["opencode-status-bar"]
+  "plugins": ["opencode-status-bar"]
 }
 ```
 

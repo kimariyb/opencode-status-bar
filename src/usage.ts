@@ -205,21 +205,23 @@ const cache = new Map<UsageWindow, CacheEntry>()
 
 // ---------------------------------------------------------------------------
 // SQL：db 内完成聚合，只回传模型级行（≤ 数十行）
+// V2 表结构：session_message（非 message）；assistant 走 type 列（非 $.role）；
+//   模型取 $.model.id（V2 无顶层 $.modelID）；time_created 毫秒
 // 过滤口径（对齐 cc-switch）：assistant + 已完成（time.completed 存在）+ 非全零
 // ---------------------------------------------------------------------------
 
 const AGG_SQL = `
   SELECT
-    COALESCE(json_extract(data, '$.modelID'), 'unknown') AS model,
+    COALESCE(json_extract(data, '$.model.id'), 'unknown') AS model,
     COUNT(*) AS requests,
     SUM(COALESCE(json_extract(data, '$.tokens.input'), 0))     AS tin,
     SUM(COALESCE(json_extract(data, '$.tokens.output'), 0))    AS tout,
     SUM(COALESCE(json_extract(data, '$.tokens.reasoning'), 0)) AS treason,
     SUM(COALESCE(json_extract(data, '$.tokens.cache.read'), 0))  AS cread,
     SUM(COALESCE(json_extract(data, '$.tokens.cache.write'), 0)) AS cwrite
-  FROM message
+  FROM session_message
   WHERE time_created > ?
-    AND json_extract(data, '$.role') = 'assistant'
+    AND type = 'assistant'
     AND json_extract(data, '$.time.completed') IS NOT NULL
     AND ( COALESCE(json_extract(data, '$.tokens.input'), 0)
         + COALESCE(json_extract(data, '$.tokens.output'), 0)

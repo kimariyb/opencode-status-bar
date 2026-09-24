@@ -1,6 +1,6 @@
 {
   "name": "opencode-status-bar",
-  "version": "0.7.0",
+  "version": "1.0.0",
   "description": "OpenCode TUI plugin — displays current time (HH:mm) and battery level in the sidebar",
   "type": "module",
   "types": "dist/index.d.ts",
@@ -10,10 +10,7 @@
       "types": "./dist/server.d.ts"
     },
     "./tui": {
-      "import": "./dist/tui.js",
-      "config": {
-        "enabled": true
-      }
+      "import": "./dist/tui.js"
     }
   },
   "files": [
@@ -49,17 +46,16 @@
   "author": "AzYuJie",
   "license": "MIT",
   "peerDependencies": {
-    "@opencode-ai/plugin": ">=1.14.0",
-    "@opencode-ai/sdk": ">=1.14.0",
-    "@opentui/core": ">=0.2.0",
-    "@opentui/solid": ">=0.2.0",
+    "@opencode/plugin": ">=2.0.0",
+    "@opentui/core": ">=0.5.10",
+    "@opentui/solid": ">=0.5.10",
     "solid-js": ">=1.9.0"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.14.50",
-    "@opencode-ai/sdk": "^1.14.50",
-    "@opentui/core": "^0.5.9",
-    "@opentui/solid": "^0.5.9",
+    "@opencode/plugin": "^2.0.16",
+    "@opencode/theme": "^2.0.16",
+    "@opentui/core": "^0.5.10",
+    "@opentui/solid": "^0.5.10",
     "@types/node": "^22.0.0",
     "esbuild": "^0.25.0",
     "esbuild-plugin-solid": "^0.5.0",

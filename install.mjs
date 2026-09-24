@@ -3,14 +3,14 @@
 /**
  * opencode-status-bar 安装脚本
  *
- * 配置 ~/.config/opencode/tui.jsonc（或 tui.json）加载 TUI 侧边栏插件。
- * 同时将插件添加到 opencode.jsonc 以保持向前兼容。
+ * OpenCode V2：配置 ~/.config/opencode/opencode.json（或 opencode.jsonc）的
+ * `plugins` 数组加载 TUI 侧边栏插件。V1 的 tui.jsonc（`plugin` 键）已废弃。
  */
 
 import { readFile, writeFile, mkdir, access } from "node:fs/promises"
 import { constants } from "node:fs"
 import { homedir, platform } from "node:os"
-import { join, dirname } from "node:path"
+import { join } from "node:path"
 
 const PLUGIN_SPEC = "opencode-status-bar"
 
@@ -37,11 +37,11 @@ function formatJSONC(obj) {
 }
 
 function mergePlugin(existing, spec) {
-  const plugins = existing.plugin ?? []
+  const plugins = existing.plugins ?? []
   if (plugins.some((p) => (typeof p === "string" ? p : p[0]) === spec)) {
     return false
   }
-  existing.plugin = [...plugins, spec]
+  existing.plugins = [...plugins, spec]
   return true
 }
 
@@ -49,45 +49,32 @@ async function main() {
   const dir = configDir()
   await mkdir(dir, { recursive: true })
 
-  // ---- tui.jsonc / tui.json ----
-  const tuiPathJsonc = join(dir, "tui.jsonc")
-  const tuiPathJson = join(dir, "tui.json")
-  let tuiPath = await exists(tuiPathJsonc) ? tuiPathJsonc : await exists(tuiPathJson) ? tuiPathJson : tuiPathJsonc
-  let tuiChanged = false
-
-  if (await exists(tuiPath)) {
-    const cfg = await readJSONC(tuiPath)
-    tuiChanged = mergePlugin(cfg, PLUGIN_SPEC)
-    if (tuiChanged) {
-      await writeFile(tuiPath, formatJSONC(cfg))
-      console.log(`[opencode-status-bar] Added to ${tuiPath}`)
-    } else {
-      console.log(`[opencode-status-bar] Already in ${tuiPath}`)
-    }
-  } else {
-    const cfg = { $schema: "https://opencode.ai/tui.json", plugin: [PLUGIN_SPEC] }
-    await writeFile(tuiPath, formatJSONC(cfg))
-    console.log(`[opencode-status-bar] Created ${tuiPath}`)
-    tuiChanged = true
-  }
-
-  // ---- opencode.jsonc (forward compat) ----
-  const ocPath = join(dir, "opencode.jsonc")
+  // ---- opencode.json / opencode.jsonc（V2 配置，键 plugins）----
+  const ocPathJsonc = join(dir, "opencode.jsonc")
   const ocPathJson = join(dir, "opencode.json")
-  let ocPath2 = await exists(ocPath) ? ocPath : await exists(ocPathJson) ? ocPathJson : null
-  if (ocPath2) {
-    const cfg = await readJSONC(ocPath2)
+  let target = await exists(ocPathJsonc) ? ocPathJsonc : await exists(ocPathJson) ? ocPathJson : ocPathJson
+
+  if (await exists(target)) {
+    const cfg = await readJSONC(target)
     if (mergePlugin(cfg, PLUGIN_SPEC)) {
-      await writeFile(ocPath2, formatJSONC(cfg))
-      console.log(`[opencode-status-bar] Also added to ${ocPath2}`)
+      await writeFile(target, formatJSONC(cfg))
+      console.log(`[opencode-status-bar] Added to ${target}`)
+    } else {
+      console.log(`[opencode-status-bar] Already in ${target}`)
     }
+  } else {
+    await writeFile(target, formatJSONC({ plugins: [PLUGIN_SPEC] }))
+    console.log(`[opencode-status-bar] Created ${target}`)
   }
 
-  if (tuiChanged) {
-    console.log("\nDone! Restart OpenCode to see the Status Bar sidebar panel.")
-  } else {
-    console.log("\nAlready installed. Restart OpenCode if you haven't yet.")
+  // ---- V1 tui.jsonc 已废弃（提示迁移）----
+  const tuiJsonc = join(dir, "tui.jsonc")
+  const tuiJson = join(dir, "tui.json")
+  if (await exists(tuiJsonc) || await exists(tuiJson)) {
+    console.log("[opencode-status-bar] note: tui.jsonc is deprecated in OpenCode V2; configuration moved to opencode.json `plugins`.")
   }
+
+  console.log("\nDone! Restart OpenCode to see the Status Bar sidebar panel.")
 }
 
 main().catch((err) => {
