@@ -907,11 +907,12 @@ const mod: Plugin.Definition = {
   setup(context) {
     // 调试日志 — 写文件确认插件被加载
     try { appendFileSync("/tmp/opencode-status-bar-debug.log", `[${new Date().toISOString()}] TUI plugin loaded\n`) } catch {}
-    // 侧边栏槽位（append = 追加在 sidebar.content 边界末尾，对应 V1 order:90；
-    // 返回释放器供宿主热重载卸载）。render 的 input.sessionID 文档保证响应式 →
+    // 侧边栏槽位（prepend = 置于 sidebar.content 边界最前，即内置分区
+    // Context/MCP/LSP… 之上；同一锚点的多个 claim 按插件启用顺序共存）。
+    // 返回释放器供宿主热重载卸载。render 的 input.sessionID 文档保证响应式 →
     // 会话切换时面板自动重渲染
     return context.ui.slot({
-      append: "sidebar.content",
+      prepend: "sidebar.content",
       render: (input) => <StatusBarPanel context={context} sessionID={input.sessionID} />,
     })
   },
